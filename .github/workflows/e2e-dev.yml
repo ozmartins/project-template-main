@@ -371,13 +371,13 @@ jobs:
       # Per-suite Playwright JSON, always uploaded by the jobs above. Either may be
       # absent if a runner died before writing it; the record script handles that.
       - name: Download smoke results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: smoke-results
           path: artifacts/smoke
         continue-on-error: true
       - name: Download experience results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: experience-results
           path: artifacts/experience
