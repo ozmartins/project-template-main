@@ -1,0 +1,7 @@
+{
+  "name": "invalid-definition",
+  "version": "1.0.0",
+  "steps": {
+    "unknown_step": {}
+  }
+}

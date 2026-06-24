@@ -1,0 +1,17 @@
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: #f7f8fa;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin-top: 0;
+}

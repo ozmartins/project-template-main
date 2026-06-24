@@ -1,0 +1,352 @@
+{
+  "name": "vertical-classification",
+  "version": "1.0.0",
+  "description": "Classify a company into industry vertical and sub-vertical using a multi-step LLM pipeline. Replicates the mna-app agentic classification pattern using generic DSL building blocks.",
+
+  "input_schema": {
+    "type": "object",
+    "required": ["company_name", "domain"],
+    "properties": {
+      "company_name": { "type": "string", "title": "Company name", "minLength": 1 },
+      "domain": { "type": "string", "title": "Domain", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+
+  "variables": {
+    "company_active": false,
+    "lifecycle_stage": "unknown",
+    "broad_vertical": null,
+    "sub_vertical": null,
+    "classification_confidence": 0
+  },
+
+  "steps": {
+    "sequence": {
+      "steps": [
+        {
+          "activity": {
+            "name": "domain_probe",
+            "args": {
+              "url": "$input.domain"
+            },
+            "result": "probe",
+            "start_to_close_timeout": "30s",
+            "retry": { "max_attempts": 3, "initial_interval": "2s" },
+            "output_schema": {
+              "type": "object",
+              "required": ["domain", "domain_active", "dns_resolves"],
+              "properties": {
+                "domain": { "type": "string" },
+                "domain_active": { "type": "boolean" },
+                "dns_resolves": { "type": "boolean" },
+                "http_status": { "type": ["number", "null"] },
+                "final_url": { "type": ["string", "null"] },
+                "ssl_expiry_days": { "type": ["number", "null"] }
+              }
+            }
+          }
+        },
+
+        {
+          "set_variable": {
+            "name": "company_active",
+            "value": "$var.probe.domain_active"
+          }
+        },
+
+        {
+          "condition": {
+            "if": "$var.probe.domain_active == true",
+            "then": {
+              "sequence": {
+                "steps": [
+                  {
+                    "activity": {
+                      "name": "web_search",
+                      "args": {
+                        "query": "$input.company_name $input.domain company overview industry",
+                        "num_results": 5
+                      },
+                      "result": "search_results",
+                      "start_to_close_timeout": "30s",
+                      "retry": { "max_attempts": 2 },
+                      "output_schema": {
+                        "type": "object",
+                        "required": ["query", "results"],
+                        "properties": {
+                          "query": { "type": "string" },
+                          "results": { "type": "array" }
+                        }
+                      }
+                    }
+                  },
+
+                  {
+                    "activity": {
+                      "name": "llm_agent",
+                      "args": {
+                        "system_prompt": "You are a company lifecycle analyst. Given information about a company, determine its current lifecycle stage.\n\nRespond with ONLY valid JSON matching the provided schema. Do not include markdown or explanation.",
+                        "user_prompt": "Company: $input.company_name ($input.domain)\n\nWeb search results:\n$var.search_results\n\nDetermine the lifecycle stage of this company. Choose from: seed, early_stage, growth, mature, declining, acquired, merged, defunct, unknown.",
+                        "provider": "anthropic",
+                        "model_id": "claude-haiku-4-5-20251001",
+                        "response_schema": {
+                          "type": "object",
+                          "required": ["lifecycle_stage", "reasoning", "confidence"],
+                          "properties": {
+                            "lifecycle_stage": {
+                              "type": "string",
+                              "enum": [
+                                "seed",
+                                "early_stage",
+                                "growth",
+                                "mature",
+                                "declining",
+                                "acquired",
+                                "merged",
+                                "defunct",
+                                "unknown"
+                              ]
+                            },
+                            "reasoning": { "type": "string" },
+                            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                          },
+                          "additionalProperties": false
+                        },
+                        "schema_name": "lifecycle_classification",
+                        "temperature": 0,
+                        "max_tokens": 500
+                      },
+                      "result": "lifecycle_response",
+                      "start_to_close_timeout": "60s",
+                      "retry": { "max_attempts": 3 },
+                      "output_schema": {
+                        "type": "object",
+                        "required": ["parsed"],
+                        "properties": {
+                          "parsed": {
+                            "type": "object",
+                            "required": ["lifecycle_stage", "reasoning", "confidence"],
+                            "properties": {
+                              "lifecycle_stage": { "type": "string" },
+                              "reasoning": { "type": "string" },
+                              "confidence": { "type": "number" }
+                            }
+                          },
+                          "content_filter_blocked": { "type": "boolean" }
+                        }
+                      }
+                    }
+                  },
+
+                  {
+                    "set_variable": {
+                      "name": "lifecycle_stage",
+                      "value": "$var.lifecycle_response.parsed.lifecycle_stage"
+                    }
+                  },
+
+                  {
+                    "activity": {
+                      "name": "llm_agent",
+                      "args": {
+                        "system_prompt": "You are an industry classification expert. Classify companies into broad industry verticals.\n\nYou have access to a web search tool. Use it to gather more information if needed before classifying.\n\nRespond with ONLY valid JSON matching the provided schema.",
+                        "user_prompt": "Company: $input.company_name ($input.domain)\nLifecycle: $var.lifecycle_stage\n\nSearch results summary:\n$var.search_results\n\nClassify this company into a broad industry vertical.",
+                        "tools": [
+                          {
+                            "name": "search_web",
+                            "description": "Search the web for more information about the company.",
+                            "parameters": {
+                              "type": "object",
+                              "required": ["query"],
+                              "properties": {
+                                "query": { "type": "string", "description": "Search query" },
+                                "count": {
+                                  "type": "number",
+                                  "description": "Number of results (default 5)"
+                                }
+                              }
+                            }
+                          }
+                        ],
+                        "response_schema": {
+                          "type": "object",
+                          "required": ["vertical", "sub_verticals", "reasoning", "confidence"],
+                          "properties": {
+                            "vertical": {
+                              "type": "string",
+                              "enum": [
+                                "technology",
+                                "healthcare",
+                                "financial_services",
+                                "industrials",
+                                "consumer_goods",
+                                "media_entertainment",
+                                "real_estate",
+                                "energy",
+                                "materials",
+                                "utilities",
+                                "government",
+                                "nonprofit",
+                                "unknown"
+                              ]
+                            },
+                            "sub_verticals": {
+                              "type": "array",
+                              "items": { "type": "string" },
+                              "minItems": 1,
+                              "maxItems": 5
+                            },
+                            "reasoning": { "type": "string" },
+                            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                          },
+                          "additionalProperties": false
+                        },
+                        "provider": "anthropic",
+                        "model_id": "claude-sonnet-4-6",
+                        "schema_name": "broad_vertical_classification",
+                        "temperature": 0,
+                        "max_tokens": 800,
+                        "max_tool_rounds": 3
+                      },
+                      "result": "broad_classification_response",
+                      "start_to_close_timeout": "120s",
+                      "retry": { "max_attempts": 3 },
+                      "output_schema": {
+                        "type": "object",
+                        "required": ["parsed"],
+                        "properties": {
+                          "parsed": {
+                            "type": "object",
+                            "required": ["vertical", "sub_verticals"],
+                            "properties": {
+                              "vertical": { "type": "string" },
+                              "sub_verticals": { "type": "array" },
+                              "confidence": { "type": "number" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+
+                  {
+                    "set_variable": {
+                      "name": "broad_vertical",
+                      "value": "$var.broad_classification_response.parsed.vertical"
+                    }
+                  },
+
+                  {
+                    "set_variable": {
+                      "name": "classification_confidence",
+                      "value": "$var.broad_classification_response.parsed.confidence"
+                    }
+                  },
+
+                  {
+                    "activity": {
+                      "name": "llm_agent",
+                      "args": {
+                        "system_prompt": "You are a specialist in $var.broad_vertical industry analysis. Your job is to determine the precise sub-vertical of a company within this sector.\n\nRespond with ONLY valid JSON matching the provided schema.",
+                        "user_prompt": "Company: $input.company_name ($input.domain)\nBroad vertical: $var.broad_vertical\nCandidate sub-verticals: $var.broad_classification_response.parsed.sub_verticals\n\nSelect the single best sub-vertical and provide a specific 1-3 word label.",
+                        "response_schema": {
+                          "type": "object",
+                          "required": ["sub_vertical", "tags", "reasoning"],
+                          "properties": {
+                            "sub_vertical": { "type": "string", "minLength": 1 },
+                            "tags": {
+                              "type": "array",
+                              "items": { "type": "string" },
+                              "minItems": 1,
+                              "maxItems": 10
+                            },
+                            "reasoning": { "type": "string" }
+                          },
+                          "additionalProperties": false
+                        },
+                        "provider": "anthropic",
+                        "model_id": "claude-haiku-4-5-20251001",
+                        "schema_name": "sub_vertical_classification",
+                        "temperature": 0,
+                        "max_tokens": 600
+                      },
+                      "result": "sub_classification_response",
+                      "start_to_close_timeout": "60s",
+                      "retry": { "max_attempts": 3 },
+                      "output_schema": {
+                        "type": "object",
+                        "required": ["parsed"],
+                        "properties": {
+                          "parsed": {
+                            "type": "object",
+                            "required": ["sub_vertical", "tags"],
+                            "properties": {
+                              "sub_vertical": { "type": "string" },
+                              "tags": { "type": "array" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+
+                  {
+                    "set_variable": {
+                      "name": "sub_vertical",
+                      "value": "$var.sub_classification_response.parsed.sub_vertical"
+                    }
+                  },
+
+                  {
+                    "activity": {
+                      "name": "supabase_mutate",
+                      "args": {
+                        "table": "companies",
+                        "operation": "upsert",
+                        "match": { "domain": "$input.domain" },
+                        "values": {
+                          "domain": "$input.domain",
+                          "name": "$input.company_name",
+                          "domain_active": "$var.probe.domain_active",
+                          "lifecycle_stage": "$var.lifecycle_stage",
+                          "vertical": "$var.broad_vertical",
+                          "sub_vertical": "$var.sub_vertical",
+                          "classification_tags": "$var.sub_classification_response.parsed.tags",
+                          "classification_confidence": "$var.classification_confidence",
+                          "classified_at": "$input.run_at"
+                        }
+                      },
+                      "result": "persist_result",
+                      "start_to_close_timeout": "15s",
+                      "retry": { "max_attempts": 3, "initial_interval": "1s" }
+                    }
+                  }
+                ]
+              }
+            },
+            "else": {
+              "activity": {
+                "name": "supabase_mutate",
+                "args": {
+                  "table": "companies",
+                  "operation": "upsert",
+                  "match": { "domain": "$input.domain" },
+                  "values": {
+                    "domain": "$input.domain",
+                    "name": "$input.company_name",
+                    "domain_active": false,
+                    "lifecycle_stage": "defunct",
+                    "classified_at": "$input.run_at"
+                  }
+                },
+                "start_to_close_timeout": "15s",
+                "retry": { "max_attempts": 3 }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

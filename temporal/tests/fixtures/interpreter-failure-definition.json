@@ -1,0 +1,16 @@
+{
+  "name": "interpreter-failure-definition",
+  "version": "1.0.0",
+  "steps": {
+    "for_each": {
+      "items": "$var.nonexistent_list",
+      "item_var": "item",
+      "body": {
+        "set_variable": {
+          "name": "seen_item",
+          "value": "$var.item"
+        }
+      }
+    }
+  }
+}

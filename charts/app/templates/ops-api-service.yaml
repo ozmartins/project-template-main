@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "app.opsApi.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ops-api
+spec:
+  type: {{ .Values.opsApi.service.type }}
+  selector:
+    {{- include "app.opsApi.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.opsApi.service.port }}
+      targetPort: http
+      protocol: TCP

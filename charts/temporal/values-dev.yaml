@@ -1,0 +1,166 @@
+# Ringpop resilience and resource overrides for the dev namespace (staging cluster: aks-selfheal-staging).
+# This file is used exclusively by deploy-dev.yml; deploy-test.yml uses values-test.yaml.
+#
+# Ringpop resilience: maxJoinDuration is set to 5m here to override any upstream chart
+# default (30s, 60s, 1m0s, etc.) that may be hardcoded regardless of the base values.yaml.
+# The deploy-dev.yml workflow also unconditionally patches the temporal-config ConfigMap
+# as a safety net (see docs/DEPLOYMENT.md § Temporal Ringpop Timeout) using a regex sed
+# that replaces any current maxJoinDuration value with 5m.
+# startupProbe is configured below with failureThreshold: 30 (allowing ~5 minutes for startup)
+# to prevent premature CrashLoopBackOff during ringpop bootstrap. initContainers are added to
+# temporal-frontend to enforce startup ordering (waits for history:6934, matching:6935, and
+# worker:6939 before starting ringpop bootstrap). PDBs are enabled below to prevent voluntary disruptions from
+# taking any Temporal service offline during node drains.
+
+# Istio PeerAuthentication: exempt gossip and gRPC ports from STRICT mTLS enforcement.
+# Both dev and test namespaces run on the staging cluster with Istio STRICT mTLS. The
+# test namespace enforces a namespace-wide STRICT PeerAuthentication; without port 7235
+# set to PERMISSIVE, temporal-frontend's scanner tasks cannot connect to temporal-matching
+# (the Istio sidecar resets the TCP connection: upstream connect error, reset reason: connect).
+# Gossip ports (6933-6939) are exempted for ringpop TCP traffic that is not mTLS-capable.
+peerAuthentication:
+  ringpopPermissive:
+    enabled: true
+
+# PodDisruptionBudgets: enabled for all four Temporal services in k8s environments.
+# Prevents voluntary disruptions (node drains, cluster upgrades) from evicting the only
+# replica of each service, which would break ringpop quorum.
+pdb:
+  frontend:
+    enabled: true
+    minAvailable: 1
+  history:
+    enabled: true
+    minAvailable: 1
+  matching:
+    enabled: true
+    minAvailable: 1
+  worker:
+    enabled: true
+    minAvailable: 1
+
+temporal:
+  server:
+    config:
+      # Ringpop membership join timeout — explicitly set here to override any upstream chart
+      # default (30s, 60s, 1m0s, etc.) that may be hardcoded regardless of base values.yaml.
+      # Both dev and test namespaces use this file (see NOTE at top of file).
+      global:
+        membership:
+          maxJoinDuration: 5m
+    frontend:
+      # initContainers enforce startup ordering: temporal-frontend waits for temporal-history
+      # (ringpop port 6934), temporal-matching (ringpop port 6935), and temporal-worker
+      # (ringpop port 6939) to be reachable before starting its own ringpop bootstrap.
+      # This prevents the "join duration exceeded max"
+      # crash loop that occurs when frontend starts before its ring peers are listening.
+      # Combined with maxJoinDuration: 5m and the startupProbe below, this eliminates the
+      # race condition described in the ringpop bootstrap failure post-mortems.
+      initContainers:
+        - name: wait-for-history
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - >-
+              echo "Waiting for temporal-history:6934...";
+              until nc -z temporal-history 6934 2>/dev/null;
+              do echo "temporal-history not ready, retrying in 5s"; sleep 5; done;
+              echo "temporal-history:6934 is ready"
+        - name: wait-for-matching
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - >-
+              echo "Waiting for temporal-matching:6935...";
+              until nc -z temporal-matching 6935 2>/dev/null;
+              do echo "temporal-matching not ready, retrying in 5s"; sleep 5; done;
+              echo "temporal-matching:6935 is ready"
+        - name: wait-for-worker
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - >-
+              echo "Waiting for temporal-worker:6939...";
+              until nc -z temporal-worker 6939 2>/dev/null;
+              do echo "temporal-worker not ready, retrying in 5s"; sleep 5; done;
+              echo "temporal-worker:6939 is ready"
+      # startupProbe allows up to ~5.5 minutes (30s initial + 30×10s) for the frontend
+      # to join the ringpop ring before Kubernetes declares the pod failed.
+      startupProbe:
+        tcpSocket:
+          port: rpc
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        failureThreshold: 30
+        timeoutSeconds: 5
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    history:
+      startupProbe:
+        tcpSocket:
+          port: rpc
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        failureThreshold: 30
+        timeoutSeconds: 5
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    matching:
+      startupProbe:
+        tcpSocket:
+          port: rpc
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        failureThreshold: 30
+        timeoutSeconds: 5
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    worker:
+      startupProbe:
+        tcpSocket:
+          port: rpc
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        failureThreshold: 30
+        timeoutSeconds: 5
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  admintools:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  web:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi

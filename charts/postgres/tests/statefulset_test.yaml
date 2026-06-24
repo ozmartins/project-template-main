@@ -1,0 +1,48 @@
+suite: statefulset tests
+templates:
+  - templates/statefulset.yaml
+tests:
+  - it: should use default 1Gi storage size
+    asserts:
+      - equal:
+          path: spec.volumeClaimTemplates[0].spec.resources.requests.storage
+          value: "1Gi"
+        documentIndex: 1
+
+  - it: should use custom storage size from values
+    set:
+      persistence.size: "10Gi"
+    asserts:
+      - equal:
+          path: spec.volumeClaimTemplates[0].spec.resources.requests.storage
+          value: "10Gi"
+        documentIndex: 1
+
+  - it: should deploy as StatefulSet
+    asserts:
+      - isKind:
+          of: StatefulSet
+        documentIndex: 1
+
+  - it: should mount data volume at postgresql data path
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: data
+            mountPath: /var/lib/postgresql/data
+        documentIndex: 1
+
+  - it: should have volumeClaimTemplate named data
+    asserts:
+      - equal:
+          path: spec.volumeClaimTemplates[0].metadata.name
+          value: data
+        documentIndex: 1
+
+  - it: should use ReadWriteOnce access mode
+    asserts:
+      - contains:
+          path: spec.volumeClaimTemplates[0].spec.accessModes
+          content: ReadWriteOnce
+        documentIndex: 1

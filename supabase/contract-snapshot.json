@@ -1,0 +1,68 @@
+[
+  {
+    "name": "approve_workflow_definition",
+    "args": [
+      {
+        "name": "p_id",
+        "type": "uuid"
+      },
+      {
+        "name": "p_reason",
+        "type": "text"
+      }
+    ],
+    "returns": "workflow_definitions"
+  },
+  {
+    "name": "deploy_workflow_definition",
+    "args": [
+      {
+        "name": "p_name",
+        "type": "text"
+      },
+      {
+        "name": "p_version",
+        "type": "text"
+      }
+    ],
+    "returns": "workflow_definitions"
+  },
+  {
+    "name": "public.create_entity_with_version",
+    "args": [
+      {
+        "name": "p_entity_type",
+        "type": "text"
+      },
+      {
+        "name": "p_data",
+        "type": "jsonb"
+      }
+    ],
+    "returns": "jsonb"
+  },
+  {
+    "name": "reject_workflow_definition",
+    "args": [
+      {
+        "name": "p_id",
+        "type": "uuid"
+      },
+      {
+        "name": "p_reason",
+        "type": "text"
+      }
+    ],
+    "returns": "workflow_definitions"
+  },
+  {
+    "name": "submit_definition_for_review",
+    "args": [
+      {
+        "name": "p_id",
+        "type": "uuid"
+      }
+    ],
+    "returns": "workflow_definitions"
+  }
+]

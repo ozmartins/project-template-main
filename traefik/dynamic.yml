@@ -1,0 +1,44 @@
+tls:
+  certificates:
+    - certFile: /certs/cert.pem
+      keyFile: /certs/key.pem
+
+http:
+  routers:
+    # Supabase routes must match before the catch-all frontend route (higher priority)
+    supabase:
+      rule: "PathPrefix(`/rest/v1`) || PathPrefix(`/auth/v1`) || PathPrefix(`/storage/v1`) || PathPrefix(`/functions/v1`) || PathPrefix(`/realtime/v1`)"
+      priority: 20
+      service: supabase-kong
+      tls: {}
+
+    temporal-ui:
+      rule: "PathPrefix(`/temporal`)"
+      priority: 20
+      service: temporal-ui
+      tls: {}
+
+    # Catch-all: everything else goes to the frontend SPA
+    frontend:
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      service: frontend
+      tls: {}
+
+  services:
+    frontend:
+      loadBalancer:
+        servers:
+          - url: "http://frontend:3000"
+
+    # Supabase is managed by the Supabase CLI (supabase start), not by compose,
+    # so it runs on the host and is reached via host.docker.internal.
+    supabase-kong:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:54321"
+
+    temporal-ui:
+      loadBalancer:
+        servers:
+          - url: "http://temporal-ui:8080"

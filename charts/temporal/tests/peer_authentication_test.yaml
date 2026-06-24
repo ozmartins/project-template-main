@@ -1,0 +1,98 @@
+suite: temporal peer-authentication tests
+templates:
+  - templates/peer-authentication.yaml
+tests:
+  - it: should not render PeerAuthentication when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render PeerAuthentication when enabled
+    set:
+      peerAuthentication.ringpopPermissive.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PeerAuthentication
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-ringpop-permissive
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: temporal
+      - equal:
+          path: metadata.labels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+      - equal:
+          path: metadata.annotations["meta.helm.sh/release-name"]
+          value: RELEASE-NAME
+      - equal:
+          path: metadata.annotations["meta.helm.sh/release-namespace"]
+          value: NAMESPACE
+
+  - it: should have selector matching release instance label
+    set:
+      peerAuthentication.ringpopPermissive.enabled: true
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+
+  - it: should include ringpop gossip ports as PERMISSIVE
+    set:
+      peerAuthentication.ringpopPermissive.enabled: true
+    asserts:
+      - equal:
+          path: spec.portLevelMtls["6933"].mode
+          value: PERMISSIVE
+      - equal:
+          path: spec.portLevelMtls["6934"].mode
+          value: PERMISSIVE
+      - equal:
+          path: spec.portLevelMtls["6935"].mode
+          value: PERMISSIVE
+      - equal:
+          path: spec.portLevelMtls["6939"].mode
+          value: PERMISSIVE
+
+  - it: should include gRPC port 7235 as PERMISSIVE to allow temporal-frontend to reach temporal-matching
+    set:
+      peerAuthentication.ringpopPermissive.enabled: true
+    asserts:
+      - equal:
+          path: spec.portLevelMtls["7235"].mode
+          value: PERMISSIVE
+
+  - it: should render PeerAuthentication when using values-test.yaml
+    values:
+      - ../values-test.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PeerAuthentication
+      - equal:
+          path: spec.portLevelMtls["7235"].mode
+          value: PERMISSIVE
+      - equal:
+          path: spec.portLevelMtls["6934"].mode
+          value: PERMISSIVE
+
+  - it: should render PeerAuthentication when using values-dev.yaml
+    values:
+      - ../values-dev.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PeerAuthentication
+      - equal:
+          path: spec.portLevelMtls["7235"].mode
+          value: PERMISSIVE
+      - equal:
+          path: spec.portLevelMtls["6934"].mode
+          value: PERMISSIVE

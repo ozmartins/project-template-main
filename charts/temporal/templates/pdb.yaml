@@ -1,0 +1,23 @@
+{{- $root := . }}
+{{- range list "frontend" "history" "matching" "worker" }}
+{{- $svc := . }}
+{{- $pdbValues := index $root.Values.pdb $svc }}
+{{- if $pdbValues.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $root.Release.Name }}-{{ $svc }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $root.Release.Service }}
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/name: temporal-{{ $svc }}
+    app.kubernetes.io/component: {{ $svc }}
+spec:
+  minAvailable: {{ $pdbValues.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: temporal-{{ $svc }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,94 @@
+# Pre-upgrade hook configuration for the temporal-config ConfigMap.
+# When enabled (default), a minimal ConfigMap stub is created as a
+# pre-install,pre-upgrade Helm hook before any Deployment resources are
+# applied. This prevents FailedMount errors during rolling upgrades when
+# the upstream temporalio/temporal subchart creates temporal-config as a
+# non-hook resource and there is a window where the ConfigMap is absent.
+# See: docs/DEPLOYMENT.md § Temporal ConfigMap Pre-Upgrade Hook
+configMap:
+  hook:
+    enabled: true
+
+# Istio PeerAuthentication: exempt Temporal gossip and gRPC ports from STRICT mTLS.
+# Disabled by default; enabled in values-dev.yaml for k8s environments where the
+# namespace enforces STRICT mTLS globally (e.g. test namespace).
+# See: docs/DEPLOYMENT.md § Temporal Istio mTLS
+peerAuthentication:
+  ringpopPermissive:
+    enabled: false
+
+# PodDisruptionBudget configuration for each Temporal service.
+# Disabled by default; enabled in values-dev.yaml for k8s environments.
+pdb:
+  frontend:
+    enabled: false
+    minAvailable: 1
+  history:
+    enabled: false
+    minAvailable: 1
+  matching:
+    enabled: false
+    minAvailable: 1
+  worker:
+    enabled: false
+    minAvailable: 1
+
+temporal:
+  server:
+    replicaCount: 1
+    config:
+      # Ringpop membership join timeout. The upstream temporalio/temporal chart exposes
+      # this value via server.config.global.membership.maxJoinDuration. Setting it to 5m
+      # (300s) prevents CrashLoopBackOff death spirals when services restart with
+      # exponential backoff and the ring has not yet re-formed. The deploy workflows also
+      # unconditionally patch the ConfigMap as a safety net for chart versions that ignore
+      # this value or hardcode a shorter duration (30s, 60s, etc.).
+      global:
+        membership:
+          maxJoinDuration: 5m
+      persistence:
+        default:
+          driver: "sql"
+          sql:
+            driver: "postgres12"
+            # Use the shared postgres service deployed by the postgres Helm release.
+            # temporal-postgres-secret is created by the deploy workflow with the same
+            # password as postgres-secret so that user postgres can authenticate.
+            host: postgres
+            port: 5432
+            database: temporal
+            user: postgres
+            # Secret must exist in the namespace before deploying: see deploy workflow
+            existingSecret: "temporal-postgres-secret"
+        visibility:
+          driver: "sql"
+          sql:
+            driver: "postgres12"
+            host: postgres
+            port: 5432
+            database: temporal_visibility
+            user: postgres
+            existingSecret: "temporal-postgres-secret"
+  schema:
+    # Explicitly enable schema setup and update jobs to ensure the schema_version table
+    # and all required Temporal tables are created on first install and kept current on
+    # upgrade. These jobs run temporal-sql-tool against both the default (temporal) and
+    # visibility (temporal_visibility) databases before the server pods start.
+    setup:
+      enabled: true
+    update:
+      enabled: true
+  cassandra:
+    enabled: false
+  mysql:
+    enabled: false
+  postgresql:
+    # Disabled: using the shared postgres service (charts/postgres) deployed in each namespace.
+    enabled: false
+  prometheus:
+    enabled: false
+  grafana:
+    enabled: false
+  elasticsearch:
+    enabled: false
+

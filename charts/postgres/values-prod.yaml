@@ -1,0 +1,8 @@
+persistence:
+  size: "10Gi"
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  storageContainer: "postgres-backups"
+  retentionDays: "30"

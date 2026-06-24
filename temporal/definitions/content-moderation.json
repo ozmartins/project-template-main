@@ -1,0 +1,396 @@
+{
+  "name": "content-moderation",
+  "version": "1.0.0",
+  "description": "Classify submitted content and route it to automatic approval, automatic rejection, or human review. Legacy smoke fixtures may refer to moderation_review; live reviewers signal review_decision.",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "policy_version"
+    ],
+    "properties": {
+      "content_text": {
+        "type": "string",
+        "minLength": 1
+      },
+      "content_url": {
+        "type": "string",
+        "minLength": 1
+      },
+      "submission_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "submitted_by": {
+        "type": "string",
+        "minLength": 1
+      },
+      "policy_version": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "anyOf": [
+      {
+        "required": [
+          "content_text"
+        ]
+      },
+      {
+        "required": [
+          "content_url"
+        ]
+      }
+    ],
+    "additionalProperties": false
+  },
+  "variables": {
+    "crawl_max_chars": 1200,
+    "content_for_classification": null,
+    "human_review_confidence_threshold": 0.7,
+    "classification": null,
+    "decision_status": null,
+    "review_signal": null,
+    "review_payload": null,
+    "legacy_review_signal_name": "moderation_review"
+  },
+  "steps": {
+    "sequence": {
+      "steps": [
+        {
+          "condition": {
+            "if": "$input.content_url != null",
+            "then": {
+              "sequence": {
+                "steps": [
+                  {
+                    "activity": {
+                      "name": "web_crawl",
+                      "args": {
+                        "url": "$input.content_url",
+                        "subpages": 1,
+                        "max_chars": "$var.crawl_max_chars"
+                      },
+                      "result": "crawl_result",
+                      "start_to_close_timeout": "60s",
+                      "retry": {
+                        "max_attempts": 2,
+                        "initial_interval": "2s"
+                      },
+                      "output_schema": {
+                        "type": "object",
+                        "required": [
+                          "url",
+                          "pages"
+                        ],
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          },
+                          "pages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "url",
+                                "title",
+                                "content"
+                              ],
+                              "properties": {
+                                "url": {
+                                  "type": "string"
+                                },
+                                "title": {
+                                  "type": "string"
+                                },
+                                "content": {
+                                  "type": "string"
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  {
+                    "set_variable": {
+                      "name": "content_for_classification",
+                      "value": "Submitted URL: $input.content_url\n\nUser supplied text:\n$input.content_text\n\nLength-bounded crawl excerpts:\n$var.crawl_result.pages"
+                    }
+                  }
+                ]
+              }
+            },
+            "else": {
+              "set_variable": {
+                "name": "content_for_classification",
+                "value": "Submitted text:\n$input.content_text"
+              }
+            }
+          }
+        },
+        {
+          "activity": {
+            "name": "llm_agent",
+            "args": {
+              "system_prompt": "You are a trust and safety content moderation classifier. Classify submitted content against the moderation policy and respond with ONLY valid JSON matching the provided schema.\n\nCategories: spam, hate, nsfw, misinformation, ok.\nSeverity: low, medium, high.\nMark safe=true only when the content should be approved automatically under the policy version provided.",
+              "user_prompt": "Policy version: $input.policy_version\nSubmitted by: $input.submitted_by\nSubmission ID: $input.submission_id\n\nContent to classify:\n$var.content_for_classification",
+              "response_schema": {
+                "type": "object",
+                "required": [
+                  "safe",
+                  "category",
+                  "severity",
+                  "reasoning",
+                  "confidence"
+                ],
+                "properties": {
+                  "safe": {
+                    "type": "boolean"
+                  },
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "spam",
+                      "hate",
+                      "nsfw",
+                      "misinformation",
+                      "ok"
+                    ]
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high"
+                    ]
+                  },
+                  "reasoning": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "schema_name": "content_moderation_classification",
+              "temperature": 0,
+              "max_tokens": 500
+            },
+            "result": "classification_result",
+            "start_to_close_timeout": "90s",
+            "retry": {
+              "max_attempts": 2,
+              "initial_interval": "2s"
+            },
+            "output_schema": {
+              "type": "object",
+              "required": [
+                "parsed",
+                "provider",
+                "model",
+                "prompt_tokens",
+                "completion_tokens",
+                "content_filter_blocked"
+              ],
+              "properties": {
+                "parsed": {
+                  "type": "object",
+                  "required": [
+                    "safe",
+                    "category",
+                    "severity",
+                    "reasoning",
+                    "confidence"
+                  ],
+                  "properties": {
+                    "safe": {
+                      "type": "boolean"
+                    },
+                    "category": {
+                      "type": "string"
+                    },
+                    "severity": {
+                      "type": "string"
+                    },
+                    "reasoning": {
+                      "type": "string"
+                    },
+                    "confidence": {
+                      "type": "number"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "prompt_tokens": {
+                  "type": "number"
+                },
+                "completion_tokens": {
+                  "type": "number"
+                },
+                "content_filter_blocked": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "set_variable": {
+            "name": "classification",
+            "value": "$var.classification_result.parsed"
+          }
+        },
+        {
+          "condition": {
+            "if": "$var.classification.confidence < 0.7",
+            "then": {
+              "sequence": {
+                "steps": [
+                  {
+                    "set_variable": {
+                      "name": "decision_status",
+                      "value": "pending_human_review"
+                    }
+                  },
+                  {
+                    "wait_signal": {
+                      "signal": "review_decision",
+                      "result": "review_signal",
+                      "timeout": "72h",
+                      "on_timeout": {
+                        "set_variable": {
+                          "name": "decision_status",
+                          "value": "rejected"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "set_variable": {
+                      "name": "review_payload",
+                      "value": "$var.review_signal"
+                    }
+                  },
+                  {
+                    "condition": {
+                      "if": "$var.review_signal != null and $var.review_signal.decision == 'approve'",
+                      "then": {
+                        "set_variable": {
+                          "name": "decision_status",
+                          "value": "approved"
+                        }
+                      },
+                      "else": {
+                        "set_variable": {
+                          "name": "decision_status",
+                          "value": "rejected"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "else": {
+              "condition": {
+                "if": "$var.classification.safe == false",
+                "then": {
+                  "set_variable": {
+                    "name": "decision_status",
+                    "value": "rejected"
+                  }
+                },
+                "else": {
+                  "set_variable": {
+                    "name": "decision_status",
+                    "value": "approved"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "activity": {
+            "name": "supabase_mutate",
+            "args": {
+              "operation": "upsert",
+              "entity_type": "content_submission",
+              "source_record_id": "$input.submission_id",
+              "created_by": "$input.submitted_by",
+              "data": {
+                "source": {
+                  "content_text": "$input.content_text",
+                  "content_url": "$input.content_url",
+                  "crawled_pages": "$var.crawl_result.pages"
+                },
+                "moderation": {
+                  "safe": "$var.classification.safe",
+                  "category": "$var.classification.category",
+                  "severity": "$var.classification.severity",
+                  "reasoning": "$var.classification.reasoning",
+                  "confidence": "$var.classification.confidence"
+                },
+                "decision_status": "$var.decision_status",
+                "policy_version": "$input.policy_version",
+                "review": {
+                  "decision": "$var.review_payload.decision",
+                  "reviewer_id": "$var.review_payload.reviewer_id",
+                  "note": "$var.review_payload.note"
+                },
+                "audit": {
+                  "submitted_by": "$input.submitted_by"
+                }
+              }
+            },
+            "result": "persist_result",
+            "start_to_close_timeout": "30s",
+            "retry": {
+              "max_attempts": 2,
+              "initial_interval": "1s"
+            },
+            "output_schema": {
+              "type": "object",
+              "required": [
+                "entity_id",
+                "version_id",
+                "version_number",
+                "success"
+              ],
+              "properties": {
+                "entity_id": {
+                  "type": "string"
+                },
+                "version_id": {
+                  "type": "string"
+                },
+                "version_number": {
+                  "type": "number"
+                },
+                "success": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

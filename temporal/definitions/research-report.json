@@ -1,0 +1,225 @@
+{
+  "name": "research-report",
+  "version": "1.0.0",
+  "description": "Decompose a research question into search angles, run parallel web search, synthesise a structured report, and persist citation data.",
+  "input_schema": {
+    "type": "object",
+    "required": ["question", "report_key", "run_at"],
+    "properties": {
+      "question": { "type": "string", "minLength": 1 },
+      "report_key": { "type": "string", "minLength": 1 },
+      "run_at": { "type": "string", "format": "date-time" }
+    },
+    "additionalProperties": false
+  },
+  "variables": {
+    "search_queries": [],
+    "search_context": "",
+    "report": null
+  },
+  "steps": {
+    "sequence": {
+      "steps": [
+        {
+          "activity": {
+            "name": "llm_agent",
+            "args": {
+              "system_prompt": "You are a research planner. Given a user question, generate exactly 3 concise web-search queries that explore different angles.",
+              "user_prompt": "Question: $input.question\n\nReturn exactly 3 distinct web-search queries.",
+              "provider": "anthropic",
+              "model_id": "claude-sonnet-4-6",
+              "response_schema": {
+                "type": "object",
+                "required": ["queries"],
+                "properties": {
+                  "queries": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": { "type": "string", "minLength": 3 }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "schema_name": "research_query_decomposition",
+              "temperature": 0,
+              "max_tokens": 600
+            },
+            "result": "decomposition_response",
+            "start_to_close_timeout": "90s",
+            "retry": { "max_attempts": 3 },
+            "output_schema": {
+              "type": "object",
+              "required": ["parsed"],
+              "properties": {
+                "parsed": {
+                  "type": "object",
+                  "required": ["queries"],
+                  "properties": {
+                    "queries": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": { "type": "string" }
+                    }
+                  }
+                },
+                "tool_calls": { "type": "array" }
+              }
+            }
+          }
+        },
+        {
+          "set_variable": {
+            "name": "search_queries",
+            "value": "$var.decomposition_response.parsed.queries"
+          }
+        },
+        {
+          "for_each": {
+            "items": "$var.search_queries",
+            "item_var": "search_query",
+            "index_var": "search_query_index",
+            "mode": "sequential",
+            "body": {
+              "sequence": {
+                "steps": [
+                  {
+                    "activity": {
+                      "name": "web_search",
+                      "args": {
+                        "query": "$var.search_query",
+                        "num_results": 5
+                      },
+                      "result": "latest_search_result",
+                      "start_to_close_timeout": "30s",
+                      "retry": { "max_attempts": 2 },
+                      "output_schema": {
+                        "type": "object",
+                        "required": ["query", "results"],
+                        "properties": {
+                          "query": { "type": "string" },
+                          "results": { "type": "array", "minItems": 1 }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "set_variable": {
+                      "name": "search_context",
+                      "value": "$var.search_context\nSearch angle $var.search_query_index: $var.search_query\nResults: $var.latest_search_result"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "activity": {
+            "name": "llm_agent",
+            "args": {
+              "system_prompt": "You are a research analyst. Before returning your final answer, you MUST call search_web at least once to validate and enrich sources. Then return a concise structured report.",
+              "user_prompt": "Question: $input.question\n\nPlanned search queries:\n$var.search_queries\n\nPre-collected search context from workflow:\n$var.search_context\n\nReturn a report with a short summary, key points, and source citations.",
+              "tools": [
+                {
+                  "name": "search_web",
+                  "description": "Search the web for additional supporting sources.",
+                  "parameters": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {
+                      "query": { "type": "string" },
+                      "count": { "type": "number" }
+                    }
+                  }
+                }
+              ],
+              "provider": "anthropic",
+              "model_id": "claude-sonnet-4-6",
+              "response_schema": {
+                "type": "object",
+                "required": ["summary", "key_points", "sources"],
+                "properties": {
+                  "summary": { "type": "string", "minLength": 1 },
+                  "key_points": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 }
+                  },
+                  "sources": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "schema_name": "research_report",
+              "temperature": 0,
+              "max_tokens": 1200,
+              "max_tool_rounds": 3
+            },
+            "result": "report_response",
+            "start_to_close_timeout": "180s",
+            "retry": { "max_attempts": 2 },
+            "output_schema": {
+              "type": "object",
+              "required": ["parsed", "tool_calls"],
+              "properties": {
+                "parsed": {
+                  "type": "object",
+                  "required": ["summary", "key_points", "sources"],
+                  "properties": {
+                    "summary": { "type": "string" },
+                    "key_points": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": { "type": "string" }
+                    },
+                    "sources": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": { "type": "string" }
+                    }
+                  }
+                },
+                "tool_calls": { "type": "array", "minItems": 1 }
+              }
+            }
+          }
+        },
+        {
+          "set_variable": {
+            "name": "report",
+            "value": "$var.report_response.parsed"
+          }
+        },
+        {
+          "activity": {
+            "name": "supabase_mutate",
+            "args": {
+              "table": "workflow_classifications",
+              "operation": "upsert",
+              "match": { "domain": "$input.report_key" },
+              "values": {
+                "domain": "$input.report_key",
+                "name": "$input.question",
+                "domain_active": true,
+                "lifecycle_stage": "research_report",
+                "vertical": "$var.report.summary",
+                "sub_vertical": "$var.report.key_points.0",
+                "classification_tags": "$var.report.sources",
+                "confidence": 1,
+                "classified_at": "$input.run_at"
+              }
+            },
+            "result": "persist_result",
+            "start_to_close_timeout": "30s",
+            "retry": { "max_attempts": 3 }
+          }
+        }
+      ]
+    }
+  }
+}

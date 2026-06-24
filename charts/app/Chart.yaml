@@ -1,0 +1,12 @@
+apiVersion: v2
+name: app
+description: Helm chart deploying the Vite/React frontend and Python Temporal worker
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - frontend
+  - temporal
+  - worker
+maintainers:
+  - name: <ORG>

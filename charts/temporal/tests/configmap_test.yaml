@@ -1,0 +1,81 @@
+suite: temporal configmap hook tests
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: should render ConfigMap with pre-upgrade hook by default
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-config
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install,pre-upgrade
+        # weight -5 ensures this runs before any default-weight (0) hooks such as
+        # the upstream temporalio/temporal schema setup Jobs, guaranteeing the
+        # ConfigMap exists before Deployments are applied.
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-5"
+      - equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation
+
+  - it: should not render ConfigMap when hook is disabled
+    set:
+      configMap.hook.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should use release name for ConfigMap name
+    release:
+      name: my-temporal
+    asserts:
+      - equal:
+          path: metadata.name
+          value: my-temporal-config
+
+  - it: should include maxJoinDuration from values
+    set:
+      temporal.server.config.global.membership.maxJoinDuration: 5m
+    asserts:
+      - matchRegex:
+          path: data["config_template.yaml"]
+          pattern: "maxJoinDuration: 5m"
+
+  - it: should default maxJoinDuration to 5m when not set
+    set:
+      temporal.server.config.global.membership.maxJoinDuration: ""
+    asserts:
+      - matchRegex:
+          path: data["config_template.yaml"]
+          pattern: "maxJoinDuration: 5m"
+
+  - it: should include correct Helm management labels
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: temporal
+
+  - it: should render maxJoinDuration 5m when using dev/test values file
+    values:
+      - ../values-dev.yaml
+    asserts:
+      - matchRegex:
+          path: data["config_template.yaml"]
+          pattern: "maxJoinDuration: 5m"
+
+  - it: should render maxJoinDuration 5m when using values-test.yaml
+    values:
+      - ../values-test.yaml
+    asserts:
+      - matchRegex:
+          path: data["config_template.yaml"]
+          pattern: "maxJoinDuration: 5m"

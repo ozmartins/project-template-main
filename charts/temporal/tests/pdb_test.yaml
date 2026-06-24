@@ -1,0 +1,124 @@
+suite: temporal pdb tests
+templates:
+  - templates/pdb.yaml
+tests:
+  - it: should not render any PDBs when all are disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render frontend PDB when enabled
+    set:
+      pdb.frontend.enabled: true
+      pdb.frontend.minAvailable: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-frontend
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: temporal-frontend
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+
+  - it: should render history PDB when enabled
+    set:
+      pdb.history.enabled: true
+      pdb.history.minAvailable: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-history
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: temporal-history
+
+  - it: should render matching PDB when enabled
+    set:
+      pdb.matching.enabled: true
+      pdb.matching.minAvailable: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-matching
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: temporal-matching
+
+  - it: should render worker PDB when enabled
+    set:
+      pdb.worker.enabled: true
+      pdb.worker.minAvailable: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-worker
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: temporal-worker
+
+  - it: should render all four PDBs when all are enabled
+    set:
+      pdb.frontend.enabled: true
+      pdb.frontend.minAvailable: 1
+      pdb.history.enabled: true
+      pdb.history.minAvailable: 1
+      pdb.matching.enabled: true
+      pdb.matching.minAvailable: 1
+      pdb.worker.enabled: true
+      pdb.worker.minAvailable: 1
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: should respect custom minAvailable value
+    set:
+      pdb.frontend.enabled: true
+      pdb.frontend.minAvailable: 2
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 2
+
+  - it: should render all four PDBs when using values-test.yaml
+    values:
+      - ../values-test.yaml
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: should render all four PDBs when using values-dev.yaml
+    values:
+      - ../values-dev.yaml
+    asserts:
+      - hasDocuments:
+          count: 4

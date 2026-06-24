@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.opsApi.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ops-api
+spec:
+  replicas: {{ .Values.opsApi.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "app.opsApi.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "app.opsApi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ops-api
+    spec:
+      {{- with .Values.opsApi.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ default (include "app.opsApi.fullname" .) .Values.opsApi.serviceAccount.name | quote }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.opsApi.podSecurityContext | nindent 8 }}
+      {{- if gt (int .Values.opsApi.replicaCount) 1 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "app.opsApi.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        - name: ops-api
+          image: {{ include "app.image" (dict "image" .Values.opsApi.image "global" .Values.imageRegistry) }}
+          imagePullPolicy: {{ .Values.opsApi.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.opsApi.securityContext | nindent 12 }}
+          command:
+            - node
+            - dist/worker.js
+          volumeMounts:
+            - name: ops-api-tmp
+              mountPath: /tmp
+          env:
+            - name: HTTP_PORT
+              value: {{ .Values.opsApi.service.port | quote }}
+            - name: TEMPORAL_ADDRESS
+              value: {{ .Values.opsApi.temporal.address | quote }}
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.opsApi.temporal.namespace | quote }}
+            - name: SUPABASE_URL
+              value: {{ .Values.opsApi.supabase.url | quote }}
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.opsApi.secrets.supabaseServiceRoleKey.secretName | quote }}
+                  key: {{ .Values.opsApi.secrets.supabaseServiceRoleKey.key | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.opsApi.service.port }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.opsApi.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.opsApi.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.opsApi.resources | nindent 12 }}
+      volumes:
+        - name: ops-api-tmp
+          emptyDir: {}

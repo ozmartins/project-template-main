@@ -1,0 +1,23 @@
+Copyright (c) Constellation Software Inc. and its wholly-owned subsidiaries.
+
+Restricted License (MIT-Style Grant for Wholly-Owned CSI Entities Only)
+
+Permission is hereby granted, free of charge, on a perpetual, worldwide, royalty-free, non-exclusive basis, to any legal entity that qualifies as a Permitted Licensee, to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of this software and associated documentation files (the "Software"), and to create and distribute derivative works of the Software, and to permit persons within that Permitted Licensee's organization to do the same, subject to the conditions below.
+
+For purposes of this license, a "Permitted Licensee" means a corporation, partnership, or other legal person that, at the time of use, satisfies all of the following:
+
+1. Constellation Software Inc., a corporation incorporated under the laws of Ontario, Canada (TSX: CSU) ("CSI"), directly or indirectly owns 100% of the issued and outstanding equity interests of that entity.
+2. The entity has not been divested, spun off, or otherwise transferred out of CSI's direct or indirect 100% ownership.
+3. The entity continues to satisfy items 1 and 2 for the duration of its use of the Software.
+
+An entity that does not satisfy all of the foregoing criteria is not a Permitted Licensee and receives no rights under this license. For clarity, and without limitation, entities that are only partially owned by CSI (including 51%-owned entities, majority-owned entities with any minority holder, joint ventures, minority investments, and portfolio companies not wholly owned by CSI) are not Permitted Licensees.
+
+Conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+This license terminates automatically, without notice, with respect to any entity immediately upon that entity ceasing to qualify as a Permitted Licensee, including by divestiture, spin-off, or any transfer resulting in CSI owning less than 100% of that entity.
+
+Any use, copying, modification, merging, publication, distribution, sublicensing, sale, or other exploitation of the Software by any entity that is not a Permitted Licensee is expressly prohibited and constitutes copyright infringement.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

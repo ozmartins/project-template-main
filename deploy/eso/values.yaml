@@ -1,0 +1,25 @@
+installCRDs: true
+
+leaderElect: true
+
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  name: external-secrets
+
+webhook:
+  create: true
+  replicaCount: 2
+
+certController:
+  create: true
+  replicaCount: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

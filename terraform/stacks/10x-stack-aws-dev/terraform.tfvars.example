@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in. Never commit terraform.tfvars.
+# Prerequisites:
+#   1. terraform/platform/aws-staging applied (EKS nodegroup + Temporal + ESO running)
+#   2. ECR repos created: frontend, temporal-worker
+#   3. GitHub PAT with Actions secrets write access
+
+# AWS credentials come from the environment (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# or an EC2 instance profile) — no credentials in tfvars.
+
+# aws_region       = "us-east-1"      # default; override if needed
+# eks_cluster_name = "dev-eks-cluster" # default; override if needed
+
+github_token = "ghp_..."

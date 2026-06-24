@@ -1,0 +1,39 @@
+{{- if .Values.peerAuthentication.ringpopPermissive.enabled }}
+# Istio PeerAuthentication: allow Temporal's gossip (ringpop) and gRPC service ports
+# to operate in PERMISSIVE mode even when the namespace enforces STRICT mTLS globally.
+#
+# Ports exempted:
+#   6933-6935, 6939 — Temporal ringpop gossip (TCP, not mTLS-capable)
+#   7235            — Temporal gRPC inter-service communication (frontend→matching, etc.)
+#
+# Without port 7235, temporal-frontend's scanner tasks cannot poll task queues on the
+# matching service: the Istio sidecar resets the connection at the TCP connect phase
+# (upstream connect error, reset reason: connect).
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: {{ .Release.Name }}-ringpop-permissive
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: temporal
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  portLevelMtls:
+    "6933":
+      mode: PERMISSIVE
+    "6934":
+      mode: PERMISSIVE
+    "6935":
+      mode: PERMISSIVE
+    "6939":
+      mode: PERMISSIVE
+    "7235":
+      mode: PERMISSIVE
+{{- end }}

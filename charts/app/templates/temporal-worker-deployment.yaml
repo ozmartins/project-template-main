@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.temporalWorker.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-worker
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.temporalWorker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "app.temporalWorker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "app.temporalWorker.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal-worker
+    spec:
+      {{- with .Values.temporalWorker.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ default (include "app.temporalWorker.fullname" .) .Values.temporalWorker.serviceAccount.name | quote }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.temporalWorker.podSecurityContext | nindent 8 }}
+      containers:
+        - name: temporal-worker
+          image: {{ include "app.image" (dict "image" .Values.temporalWorker.image "global" .Values.imageRegistry) }}
+          imagePullPolicy: {{ .Values.temporalWorker.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.temporalWorker.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: temporal-worker-tmp
+              mountPath: /tmp
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: {{ .Values.temporalWorker.temporal.address | quote }}
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.temporalWorker.temporal.namespace | quote }}
+            - name: TEMPORAL_TASK_QUEUE
+              value: {{ default (printf "%s-main" .Release.Namespace) .Values.temporalWorker.temporal.taskQueue | quote }}
+            - name: SUPABASE_URL
+              value: {{ .Values.temporalWorker.supabase.url | quote }}
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.temporalWorker.secrets.supabaseServiceRoleKey.secretName | quote }}
+                  key: {{ .Values.temporalWorker.secrets.supabaseServiceRoleKey.key | quote }}
+          livenessProbe:
+            {{- toYaml .Values.temporalWorker.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.temporalWorker.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.temporalWorker.resources | nindent 12 }}
+      volumes:
+        - name: temporal-worker-tmp
+          emptyDir: {}

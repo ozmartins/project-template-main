@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Main surfaces ─────────────────────────────────────────── */
+  --color-background: hsl(230 20% 97%);
+  --color-foreground: hsl(224 71% 10%);
+
+  --color-card: hsl(0 0% 100%);
+  --color-card-foreground: hsl(224 71% 10%);
+
+  --color-popover: hsl(0 0% 100%);
+  --color-popover-foreground: hsl(224 71% 10%);
+
+  /* ── Brand / primary ───────────────────────────────────────── */
+  --color-primary: hsl(243 75% 58%);
+  --color-primary-foreground: hsl(0 0% 100%);
+
+  /* ── Secondary / muted ─────────────────────────────────────── */
+  --color-secondary: hsl(230 20% 93%);
+  --color-secondary-foreground: hsl(224 71% 20%);
+
+  --color-muted: hsl(230 20% 93%);
+  --color-muted-foreground: hsl(224 15% 50%);
+
+  --color-accent: hsl(243 75% 95%);
+  --color-accent-foreground: hsl(243 75% 35%);
+
+  /* ── Status ────────────────────────────────────────────────── */
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+
+  /* ── Chrome ────────────────────────────────────────────────── */
+  --color-border: hsl(230 20% 88%);
+  --color-input: hsl(230 20% 88%);
+  --color-ring: hsl(243 75% 58%);
+
+  /* ── Sidebar ───────────────────────────────────────────────── */
+  --color-sidebar: hsl(230 25% 14%);
+  --color-sidebar-foreground: hsl(230 15% 78%);
+  --color-sidebar-active-bg: hsl(243 75% 58%);
+  --color-sidebar-active-fg: hsl(0 0% 100%);
+  --color-sidebar-hover-bg: hsl(230 20% 22%);
+  --color-sidebar-border: hsl(230 20% 20%);
+  --color-sidebar-section: hsl(230 10% 55%);
+  --color-sidebar-logo-fg: hsl(0 0% 100%);
+
+  /* ── Radius ────────────────────────────────────────────────── */
+  /* 10 px — one step above the 8 px card radius so nested controls feel proportional */
+  --radius: 0.625rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}

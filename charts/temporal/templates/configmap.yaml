@@ -1,0 +1,42 @@
+{{- if .Values.configMap.hook.enabled }}
+# Pre-install/pre-upgrade hook that guarantees the temporal-config ConfigMap exists
+# before any Deployment pod is scheduled during a rolling upgrade.
+#
+# The upstream temporalio/temporal subchart creates temporal-config as a regular
+# (non-hook) resource. When the deploy workflow runs `kubectl delete configmap
+# temporal-config` to clear stale field-manager ownership and then `helm upgrade
+# --install` without --wait, there is a window between deletion and subchart
+# resource creation where pod restarts cause FailedMount errors.
+#
+# By declaring the same ConfigMap as a pre-install,pre-upgrade hook (weight -5),
+# Helm guarantees it is created before any Deployment resources are touched.
+# The subchart's regular ConfigMap template then overwrites this minimal stub
+# with the full rendered configuration.
+#
+# hook-delete-policy: before-hook-creation clears the previous hook resource
+# (and any stale field-manager ownership) before each new hook run, eliminating
+# the need for an explicit `kubectl delete configmap temporal-config` in the
+# deploy workflow.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: temporal
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  config_template.yaml: |
+    log:
+      stdout: true
+      level: info
+    global:
+      membership:
+        maxJoinDuration: {{ .Values.temporal.server.config.global.membership.maxJoinDuration | default "5m" }}
+{{- end }}

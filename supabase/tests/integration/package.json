@@ -1,0 +1,19 @@
+{
+  "name": "auth-integration-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.86.2",
+    "otpauth": "^9.3.6",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.5.3",
+    "vitest": "^4.1.9"
+  }
+}

@@ -1,0 +1,58 @@
+global:
+  enabled: true
+  tlsDisable: false
+
+injector:
+  enabled: false
+
+server:
+  replicas: 3
+
+  ha:
+    enabled: true
+    raft:
+      enabled: true
+      setNodeId: true
+
+  dataStorage:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+
+  auditStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+  service:
+    enabled: true
+    active:
+      enabled: true
+    standby:
+      enabled: true
+
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/tls/ca.crt
+    BAO_TLSCERT: /openbao/tls/tls.crt
+    BAO_TLSKEY: /openbao/tls/tls.key
+
+  volumes:
+    - name: openbao-tls
+      secret:
+        secretName: openbao-server-tls
+
+  volumeMounts:
+    - name: openbao-tls
+      mountPath: /openbao/tls
+      readOnly: true
+
+  standalone:
+    enabled: false
+
+  readinessProbe:
+    enabled: true
+  livenessProbe:
+    enabled: true
+
+ui:
+  enabled: true

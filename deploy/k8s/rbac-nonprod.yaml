@@ -1,0 +1,117 @@
+# Namespace-scoped deploy identity for nonprod (10x-stack-dev, 10x-stack-test).
+# Apply with: kubectl apply -f deploy/k8s/rbac-nonprod.yaml
+#
+# Cluster: aks-selfheal-staging (rg-selfheal-staging, eastus2)
+# Design:
+# - One service account per namespace (`gha-deployer`), used by deploy-dev/deploy-test.
+# - Namespace-scoped Role + RoleBinding ONLY — no ClusterRole/ClusterRoleBinding.
+# - Verbs limited to the release path; no cross-namespace mutation.
+# - GHA authenticates via KUBE_CONFIG_DEV / KUBE_CONFIG_TEST kubeconfig secrets.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gha-deployer
+  namespace: 10x-stack-dev
+  labels:
+    app.kubernetes.io/part-of: 10x-stack-template
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gha-deployer
+  namespace: 10x-stack-dev
+  labels:
+    app.kubernetes.io/part-of: 10x-stack-template
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gha-deployer
+  namespace: 10x-stack-dev
+  labels:
+    app.kubernetes.io/part-of: 10x-stack-template
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gha-deployer
+subjects:
+  - kind: ServiceAccount
+    name: gha-deployer
+    namespace: 10x-stack-dev
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gha-deployer
+  namespace: 10x-stack-test
+  labels:
+    app.kubernetes.io/part-of: 10x-stack-template
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gha-deployer
+  namespace: 10x-stack-test
+  labels:
+    app.kubernetes.io/part-of: 10x-stack-template
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gha-deployer
+  namespace: 10x-stack-test
+  labels:
+    app.kubernetes.io/part-of: 10x-stack-template
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gha-deployer
+subjects:
+  - kind: ServiceAccount
+    name: gha-deployer
+    namespace: 10x-stack-test

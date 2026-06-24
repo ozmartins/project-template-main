@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.frontend.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.frontend.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "app.frontend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "app.frontend.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      {{- with .Values.frontend.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ default (include "app.frontend.fullname" .) .Values.frontend.serviceAccount.name | quote }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.frontend.podSecurityContext | nindent 8 }}
+      {{- if gt (int .Values.frontend.replicaCount) 1 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "app.frontend.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        - name: frontend
+          image: {{ include "app.image" (dict "image" .Values.frontend.image "global" .Values.imageRegistry) }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.frontend.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: frontend-tmp
+              mountPath: /tmp
+            - name: frontend-cache
+              mountPath: /var/cache/nginx
+            - name: frontend-run
+              mountPath: /var/run
+            - name: vite-temp
+              mountPath: /app/node_modules/.vite-temp
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.containerPort | default .Values.frontend.service.port }}
+              protocol: TCP
+          env:
+            - name: VITE_SUPABASE_URL
+              value: {{ .Values.frontend.env.supabaseUrl | quote }}
+            - name: VITE_API_URL
+              value: {{ .Values.frontend.env.apiUrl | quote }}
+            - name: VITE_SUPABASE_ANON_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.frontend.secrets.supabaseAnonKey.secretName | quote }}
+                  key: {{ .Values.frontend.secrets.supabaseAnonKey.key | quote }}
+          livenessProbe:
+            {{- toYaml .Values.frontend.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.frontend.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+      volumes:
+        - name: frontend-tmp
+          emptyDir: {}
+        - name: frontend-cache
+          emptyDir: {}
+        - name: frontend-run
+          emptyDir: {}
+        - name: vite-temp
+          emptyDir: {}

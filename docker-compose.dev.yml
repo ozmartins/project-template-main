@@ -1,0 +1,17 @@
+name: 10x-stack-template
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+
+  temporal-worker:
+    volumes:
+      - ./temporal:/app
+    command: ["python", "-m", "src.worker"]

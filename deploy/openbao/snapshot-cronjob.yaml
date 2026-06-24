@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openbao-raft-snapshots
+  namespace: openbao
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-raft-snapshot
+  namespace: openbao
+spec:
+  schedule: "0 2 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: snapshot
+              image: ghcr.io/openbao/openbao:2.3.0
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: BAO_ADDR
+                  value: https://openbao-active.openbao.svc:8200
+                - name: BAO_CACERT
+                  value: /tls/ca.crt
+                - name: BAO_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: openbao-snapshot-token
+                      key: token
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  set -euo pipefail
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  snapshot_file="/snapshots/openbao-${ts}.snap"
+                  bao operator raft snapshot save "$snapshot_file"
+                  test -s "$snapshot_file"
+                  ls -1t /snapshots/openbao-*.snap 2>/dev/null | tail -n +15 | xargs -r rm -f
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /snapshots
+                - name: openbao-tls
+                  mountPath: /tls
+                  readOnly: true
+          volumes:
+            - name: snapshots
+              persistentVolumeClaim:
+                claimName: openbao-raft-snapshots
+            - name: openbao-tls
+              secret:
+                secretName: openbao-server-tls

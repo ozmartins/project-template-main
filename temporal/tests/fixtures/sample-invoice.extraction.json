@@ -1,0 +1,3 @@
+{
+  "text": "INVOICE\n\nVendor: Acme Office Supplies Ltd\nInvoice Number: INV-2026-001\nInvoice Date: 2026-05-01\nDue Date: 2026-05-31\nCurrency: USD\n\nBill To: Volaris AI Operations\n\nLine Items:\n1. Enterprise printer toner cartridge (Qty 4) Unit Price 399.99 Line Total 1599.96\n2. Recycled copier paper cartons (Qty 12) Unit Price 24.50 Line Total 294.00\n3. Ergonomic office chairs (Qty 3) Unit Price 479.00 Line Total 1437.00\n4. Freight and handling Line Total 181.22\n\nSubtotal: 3512.18\nTax: 0.00\nTotal Amount Due: USD 3512.18\n\nPlease remit payment via ACH within 30 days."
+}

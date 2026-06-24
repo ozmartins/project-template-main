@@ -1,0 +1,123 @@
+name: 10x-stack-template
+
+# The full local Supabase stack (API/Kong, Auth, Storage, Studio, Postgres) is
+# run by the Supabase CLI via `supabase start`, NOT by this compose file --
+# `make up` starts it first. Services below reach it on the host:
+#   browser/frontend      -> http://localhost:54321
+#   in-container worker   -> http://host.docker.internal:54321
+
+services:
+  temporal-db:
+    image: postgres:15-alpine
+    container_name: temporal-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - temporal-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:1.21.3
+    container_name: temporal
+    restart: unless-stopped
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-db
+      - TEMPORAL_CLI_ADDRESS=localhost:7233
+    ports:
+      - "127.0.0.1:7234:7233"
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  temporal-ui:
+    image: temporalio/ui:2.21.2
+    container_name: temporal-ui
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_started
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    ports:
+      - "127.0.0.1:8081:8080"
+
+  temporal-worker:
+    build: ./temporal
+    container_name: temporal-worker
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_started
+    env_file:
+      - path: .env.temporal.example
+        required: true
+      - path: .env.temporal
+        required: false
+    # Reach the host-bound Supabase API from inside the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - HTTP_PORT=${HTTP_PORT:-3001}
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:54321}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-dev-service-role-key}
+      # LLM provider — only the key for your chosen provider needs to be set.
+      # See .env.example for all provider options and their required vars.
+      - PIAGENT_PROVIDER=${PIAGENT_PROVIDER:-anthropic}
+      - PIAGENT_MODEL_ID=${PIAGENT_MODEL_ID:-claude-sonnet-4-6}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - AZURE_API_KEY=${AZURE_API_KEY:-}
+      - AZURE_API_BASE=${AZURE_API_BASE:-}
+      - AZURE_API_VERSION=${AZURE_API_VERSION:-}
+      - AZURE_OPENAI_BASE_URL=${AZURE_OPENAI_BASE_URL:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      # Exa Search (web_search / web_crawl) — gracefully stubs without this key
+      - EXA_API_KEY=${EXA_API_KEY:-}
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-3001}:${HTTP_PORT:-3001}"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: frontend
+    depends_on:
+      temporal:
+        condition: service_started
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-http://localhost:54321}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-dev-anon-key}
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:54321/functions/v1}
+    ports:
+      - "127.0.0.1:3000:8080"
+
+volumes:
+  temporal-db-data:

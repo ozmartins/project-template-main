@@ -1,0 +1,77 @@
+min_version: 1.6.0
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome-check
+      glob: "*.{ts,tsx,js,jsx,json}"
+      run: >
+        npx --prefix {root}/frontend @biomejs/biome check
+        --write
+        --no-errors-on-unmatched
+        --files-ignore-unknown=true
+        {staged_files}
+      stage_fixed: true
+
+    - name: biome-check-temporal
+      glob: "temporal/**/*.{ts,js,json}"
+      run: >
+        npx --prefix {root}/temporal @biomejs/biome check
+        --write
+        --no-errors-on-unmatched
+        --files-ignore-unknown=true
+        {staged_files}
+      stage_fixed: true
+
+    - name: typecheck-frontend
+      glob: "frontend/src/**/*.{ts,tsx}"
+      root: "frontend/"
+      run: npm run typecheck
+      fail_text: "Frontend TypeScript typecheck failed. Fix type errors before committing."
+
+    - name: typecheck-temporal
+      glob: "temporal/src/**/*.ts"
+      root: "temporal/"
+      run: npm run typecheck
+      fail_text: "Temporal TypeScript typecheck failed. Fix type errors before committing."
+
+    - name: secret-scan
+      run: >
+        gitleaks detect
+        --staged
+        --config={root}/.gitleaks.toml
+        --source={root}
+        --no-banner
+        --quiet
+
+pre-push:
+  commands:
+    gitleaks:
+      run: >
+        gitleaks protect
+        --staged
+        --redact
+        --config={root}/.gitleaks.toml
+        --source={root}
+        --no-banner
+    licenses:
+      glob: "frontend/package*.json temporal/package*.json"
+      run: |
+        cd {root}/frontend && npm run licenses:check
+        cd {root}/temporal && npm run licenses:check
+
+commit-msg:
+  jobs:
+    - name: conventional-commit
+      run: |
+        msg=$(cat {1})
+        pattern='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-z0-9/_-]+\))?: .{1,120}$'
+        if ! echo "$msg" | grep -Eq "$pattern"; then
+          echo ""
+          echo "  Commit message does not follow Conventional Commits format."
+          echo "  Expected: type(scope): description"
+          echo "  Example:  feat(auth): add MFA enforcement"
+          echo "  Types:    feat fix docs style refactor perf test chore ci build revert"
+          echo ""
+          exit 1
+        fi

@@ -1,0 +1,118 @@
+# Production profile for charts/app
+# Intended namespace: <PROD_NAMESPACE> (use: helm install/upgrade ... -n <PROD_NAMESPACE>)
+
+externalSecrets:
+  enabled: true
+  refreshInterval: 5m
+  environment: prod
+  basePath: secret/data/project-template
+  secretStoreRef:
+    name: openbao-prod
+    kind: SecretStore
+  frontend:
+    supabaseAnonKeyProperty: anon_key
+  backend:
+    supabaseServiceRoleKeyProperty: service_role_key
+
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+
+frontend:
+  replicaCount: 3
+  image:
+    # Production should only use immutable release tags/digests.
+    # Replace <release-tag> during deployment automation.
+    tag: "prod-<release-tag>"
+    # Digest is set at deploy time to pin the exact promoted image (ADR-0010).
+    # When set, the image is referenced as repo@sha256:… (tag is kept for audit).
+    digest: ""
+    pullPolicy: Always
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: frontend.<PROD_DOMAIN>
+        paths:
+          - path: /
+            pathType: Prefix
+  resources:
+    requests:
+      cpu: 300m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1024Mi
+  env:
+    supabaseUrl: "https://supabase.<PROD_DOMAIN>"
+    apiUrl: "https://api.<PROD_DOMAIN>/functions/v1"
+  secrets:
+    supabaseAnonKey:
+      secretName: "frontend-secrets-<PROD_NAMESPACE>"
+      key: "VITE_SUPABASE_ANON_KEY"
+
+temporalWorker:
+  replicaCount: 2
+  image:
+    # Production should only use immutable release tags/digests.
+    # Replace <release-tag> during deployment automation.
+    tag: "prod-<release-tag>"
+    # Digest is set at deploy time to pin the exact promoted image (ADR-0010).
+    digest: ""
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 300m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1024Mi
+  temporal:
+    address: "temporal-frontend.temporal.svc.cluster.local:7233"
+    namespace: "<PROD_NAMESPACE>"
+    taskQueue: "<PROD_NAMESPACE>-main"
+  supabase:
+    url: "https://supabase.<PROD_DOMAIN>"
+  secrets:
+    supabaseServiceRoleKey:
+      secretName: "temporal-worker-secrets-<PROD_NAMESPACE>"
+      key: "SUPABASE_SERVICE_ROLE_KEY"
+
+hpa:
+  enabled: true
+  frontend:
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilization: 70
+  temporalWorker:
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  frontend:
+    minAvailable: 2
+  temporalWorker:
+    minAvailable: 1
+  opsApi:
+    minAvailable: 1
+
+opsApi:
+  replicaCount: 2
+  image:
+    # Production should only use immutable release tags/digests.
+    # Replace <release-tag> during deployment automation.
+    tag: "prod-<release-tag>"
+    # Digest is set at deploy time to pin the exact promoted image (ADR-0010).
+    digest: ""
+    pullPolicy: Always
+  temporal:
+    address: "temporal-frontend.temporal.svc.cluster.local:7233"
+    namespace: "<PROD_NAMESPACE>"
+  supabase:
+    url: "https://supabase.<PROD_DOMAIN>"
+  secrets:
+    supabaseServiceRoleKey:
+      secretName: "temporal-worker-secrets-<PROD_NAMESPACE>"
+      key: "SUPABASE_SERVICE_ROLE_KEY"

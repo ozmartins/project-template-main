@@ -1,0 +1,123 @@
+suite: pgbouncer deployment tests
+templates:
+  - templates/pgbouncer-deployment.yaml
+tests:
+  - it: should use the official pgbouncer image
+    set:
+      pgbouncer.enabled: true
+      pgbouncer.image: pgbouncer/pgbouncer:1.15.0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: pgbouncer/pgbouncer:1.15.0
+        documentIndex: 1
+
+  - it: should mount pgbouncer-config ConfigMap via projected volume
+    set:
+      pgbouncer.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0].projected.sources[0].configMap.name
+          value: pgbouncer-config
+        documentIndex: 1
+      - equal:
+          path: spec.template.spec.volumes[0].projected.sources[1].secret.name
+          value: postgres-secret
+        documentIndex: 1
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /etc/pgbouncer
+        documentIndex: 1
+
+  - it: should pass DATABASES_HOST env var
+    set:
+      pgbouncer.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASES_HOST
+            value: postgres
+        documentIndex: 1
+
+  - it: should pass DATABASES_PORT env var
+    set:
+      pgbouncer.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASES_PORT
+            value: "5432"
+        documentIndex: 1
+
+  - it: should pass DATABASES_USER env var
+    set:
+      pgbouncer.enabled: true
+      user: myuser
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASES_USER
+            value: myuser
+        documentIndex: 1
+
+  - it: should pass DATABASES_PASSWORD from secret
+    set:
+      pgbouncer.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-secret
+                key: db-password
+        documentIndex: 1
+
+  - it: should pass DATABASES_DBNAME env var
+    set:
+      pgbouncer.enabled: true
+      database: mydb
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASES_DBNAME
+            value: mydb
+        documentIndex: 1
+
+  - it: should pass PGBOUNCER_USER env var
+    set:
+      pgbouncer.enabled: true
+      user: postgres
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PGBOUNCER_USER
+            value: postgres
+        documentIndex: 1
+
+  - it: should pass PGBOUNCER_PASSWORD from secret
+    set:
+      pgbouncer.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PGBOUNCER_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-secret
+                key: db-password
+        documentIndex: 1
+
+  - it: should not render when pgbouncer is disabled
+    set:
+      pgbouncer.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

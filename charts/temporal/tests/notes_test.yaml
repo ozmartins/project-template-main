@@ -1,0 +1,88 @@
+suite: temporal NOTES.txt startup-ordering tests
+templates:
+  - templates/NOTES.txt
+tests:
+  - it: should render maxJoinDuration in NOTES
+    set:
+      temporal.server.config.global.membership.maxJoinDuration: 5m
+    asserts:
+      - matchRegexRaw:
+          pattern: "maxJoinDuration: 5m"
+
+  - it: should default maxJoinDuration to 5m when not set
+    asserts:
+      - matchRegexRaw:
+          pattern: "maxJoinDuration: 5m"
+
+  - it: should list initContainers when configured
+    set:
+      temporal.server.frontend.initContainers:
+        - name: wait-for-history
+          image: busybox:1.36
+          command: ["sh", "-c", "echo done"]
+        - name: wait-for-matching
+          image: busybox:1.36
+          command: ["sh", "-c", "echo done"]
+        - name: wait-for-worker
+          image: busybox:1.36
+          command: ["sh", "-c", "echo done"]
+    asserts:
+      - matchRegexRaw:
+          pattern: "wait-for-history"
+      - matchRegexRaw:
+          pattern: "wait-for-matching"
+      - matchRegexRaw:
+          pattern: "wait-for-worker"
+
+  - it: should warn when no initContainers are configured
+    asserts:
+      - matchRegexRaw:
+          pattern: "initContainers:[\\s\\S]*none configured"
+
+  - it: should show startupProbe failureThreshold when configured
+    set:
+      temporal.server.frontend.startupProbe:
+        tcpSocket:
+          port: rpc
+        failureThreshold: 30
+        periodSeconds: 10
+    asserts:
+      - matchRegexRaw:
+          pattern: "failureThreshold: 30"
+      - matchRegexRaw:
+          pattern: "periodSeconds:.*10"
+
+  - it: should warn when no startupProbe is configured
+    asserts:
+      - matchRegexRaw:
+          pattern: "startupProbe:[\\s\\S]*none configured"
+
+  - it: should render startup ordering info when using values-test.yaml
+    values:
+      - ../values-test.yaml
+    asserts:
+      - matchRegexRaw:
+          pattern: "maxJoinDuration: 5m"
+      - matchRegexRaw:
+          pattern: "wait-for-history"
+      - matchRegexRaw:
+          pattern: "wait-for-matching"
+      - matchRegexRaw:
+          pattern: "wait-for-worker"
+      - matchRegexRaw:
+          pattern: "failureThreshold: 30"
+
+  - it: should render startup ordering info when using values-dev.yaml
+    values:
+      - ../values-dev.yaml
+    asserts:
+      - matchRegexRaw:
+          pattern: "maxJoinDuration: 5m"
+      - matchRegexRaw:
+          pattern: "wait-for-history"
+      - matchRegexRaw:
+          pattern: "wait-for-matching"
+      - matchRegexRaw:
+          pattern: "wait-for-worker"
+      - matchRegexRaw:
+          pattern: "failureThreshold: 30"

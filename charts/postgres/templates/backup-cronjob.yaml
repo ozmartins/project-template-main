@@ -1,0 +1,126 @@
+{{- if .Values.backup.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-backup-secret
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  storage-connection-string: {{ .Values.backup.storageConnectionString | quote }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "postgres.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: OnFailure
+          initContainers:
+            - name: pg-dump
+              image: postgres:16-alpine
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: {{ .Values.database | quote }}
+                - name: PGUSER
+                  value: {{ .Values.user | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: db-password
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  set -o pipefail
+                  TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+                  echo "${TIMESTAMP}" > /backup/timestamp
+                  echo "Starting pg_dump at ${TIMESTAMP}"
+                  pg_dump --no-password --format=plain > /backup/dump.sql
+                  gzip /backup/dump.sql
+                  echo "pg_dump complete"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: backup-tmp
+                  mountPath: /backup
+          containers:
+            - name: az-upload
+              image: {{ .Values.backup.image | quote }}
+              env:
+                - name: AZURE_STORAGE_CONNECTION_STRING
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-backup-secret
+                      key: storage-connection-string
+                - name: BACKUP_CONTAINER
+                  value: {{ .Values.backup.storageContainer | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  TIMESTAMP=$(cat /backup/timestamp)
+                  BLOB_NAME="postgres-backup-${TIMESTAMP}.sql.gz"
+                  echo "Uploading ${BLOB_NAME} to container ${BACKUP_CONTAINER}"
+                  az storage blob upload \
+                    --container-name "${BACKUP_CONTAINER}" \
+                    --name "${BLOB_NAME}" \
+                    --file "/backup/dump.sql.gz" \
+                    --overwrite
+                  echo "Pruning backups older than ${RETENTION_DAYS} days"
+                  CUTOFF=$(python3 -c "from datetime import datetime, timedelta; print((datetime.utcnow() - timedelta(days=int('${RETENTION_DAYS}'))).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+                  az storage blob list \
+                    --container-name "${BACKUP_CONTAINER}" \
+                    --query "[?properties.lastModified < '${CUTOFF}'].name" \
+                    --output tsv | while IFS= read -r blob_name; do
+                      [ -n "${blob_name}" ] || continue
+                      echo "Deleting old backup: ${blob_name}"
+                      az storage blob delete \
+                        --container-name "${BACKUP_CONTAINER}" \
+                        --name "${blob_name}"
+                    done
+                  echo "Backup complete: ${BLOB_NAME}"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: backup-tmp
+                  mountPath: /backup
+          volumes:
+            - name: backup-tmp
+              emptyDir: {}
+{{- end }}

@@ -1,0 +1,427 @@
+{
+  "id": "entity-detail",
+  "title": "Entity Details",
+  "state": {
+    "isEditing": false
+  },
+  "dataSources": {
+    "entity": {
+      "type": "supabase",
+      "table": "entities",
+      "select": "*, entity_versions(*)",
+      "filters": [{ "field": "id", "op": "eq", "value": "{{params.id}}" }],
+      "single": true
+    }
+  },
+  "layout": {
+    "type": "Stack",
+    "props": { "spacing": 6 },
+    "children": [
+      {
+        "type": "Stack",
+        "props": { "direction": "horizontal", "justify": "between", "align": "start" },
+        "children": [
+          {
+            "type": "Stack",
+            "props": { "spacing": 2 },
+            "children": [
+              {
+                "type": "Link",
+                "props": {
+                  "to": "/entities/{{params.entityType}}",
+                  "children": "Back to list"
+                }
+              },
+              {
+                "type": "Heading",
+                "props": {
+                  "level": 1,
+                  "children": "{{data.entity.entity_versions[0].data.name || 'Entity Details'}}"
+                }
+              },
+              {
+                "type": "Stack",
+                "props": { "direction": "horizontal", "spacing": 2 },
+                "children": [
+                  {
+                    "type": "Badge",
+                    "props": {
+                      "variant": "secondary",
+                      "children": "{{data.entity.entity_type}}"
+                    }
+                  },
+                  {
+                    "type": "Badge",
+                    "props": {
+                      "variant": "outline",
+                      "children": "v{{data.entity.entity_versions[0].version_number}}"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Stack",
+            "props": { "direction": "horizontal", "spacing": 2 },
+            "children": [
+              {
+                "type": "Button",
+                "if": "{{auth.canWrite && !state.isEditing}}",
+                "props": {
+                  "variant": "outline",
+                  "children": "Edit",
+                  "onClick": { "action": "setState", "key": "isEditing", "value": true }
+                }
+              },
+              {
+                "type": "Button",
+                "if": "{{state.isEditing}}",
+                "props": {
+                  "variant": "outline",
+                  "children": "Cancel",
+                  "onClick": { "action": "setState", "key": "isEditing", "value": false }
+                }
+              },
+              {
+                "type": "Button",
+                "if": "{{auth.canWrite}}",
+                "props": {
+                  "variant": "destructive",
+                  "children": "Delete",
+                  "onClick": { "action": "openModal", "modalId": "confirmDelete" }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "Grid",
+        "props": { "columns": 2, "gap": 6 },
+        "children": [
+          {
+            "type": "Card",
+            "props": { "title": "Entity Information" },
+            "children": [
+              {
+                "type": "Stack",
+                "props": { "spacing": 4 },
+                "children": [
+                  {
+                    "type": "Stack",
+                    "props": { "spacing": 1 },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "variant": "muted",
+                          "size": "sm",
+                          "children": "Internal reference"
+                        }
+                      },
+                      {
+                        "type": "Text",
+                        "props": {
+                          "variant": "muted",
+                          "size": "xs",
+                          "className": "font-mono break-all",
+                          "children": "{{data.entity.id}}"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Stack",
+                    "props": { "spacing": 1 },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": { "variant": "muted", "size": "sm", "children": "Type" }
+                      },
+                      {
+                        "type": "Text",
+                        "props": { "children": "{{data.entity.entity_type}}" }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Stack",
+                    "props": { "spacing": 1 },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": { "variant": "muted", "size": "sm", "children": "Created" }
+                      },
+                      {
+                        "type": "Text",
+                        "props": {
+                          "format": "datetime",
+                          "children": "{{data.entity.created_at}}"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Stack",
+                    "props": { "spacing": 1 },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": { "variant": "muted", "size": "sm", "children": "Updated" }
+                      },
+                      {
+                        "type": "Text",
+                        "props": {
+                          "format": "datetime",
+                          "children": "{{data.entity.updated_at}}"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Card",
+            "props": { "title": "Entity Data" },
+            "children": [
+              {
+                "type": "Stack",
+                "if": "{{!state.isEditing}}",
+                "props": { "spacing": 4 },
+                "children": [
+                  {
+                    "type": "Stack",
+                    "props": { "spacing": 1 },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": { "variant": "muted", "size": "sm", "children": "Name" }
+                      },
+                      {
+                        "type": "Text",
+                        "props": {
+                          "children": "{{data.entity.entity_versions[0].data.name || 'N/A'}}"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Stack",
+                    "props": { "spacing": 1 },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": { "variant": "muted", "size": "sm", "children": "Description" }
+                      },
+                      {
+                        "type": "Text",
+                        "props": {
+                          "children": "{{data.entity.entity_versions[0].data.description || 'No description'}}"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Stack",
+                "if": "{{state.isEditing}}",
+                "props": { "spacing": 4 },
+                "children": [
+                  {
+                    "type": "Input",
+                    "props": {
+                      "label": "Name",
+                      "value": "{{state.editName || data.entity.entity_versions[0].data.name || ''}}",
+                      "onChange": {
+                        "action": "setState",
+                        "key": "editName",
+                        "value": "{{event.target.value}}"
+                      }
+                    }
+                  },
+                  {
+                    "type": "Textarea",
+                    "props": {
+                      "label": "Description",
+                      "value": "{{state.editDescription || data.entity.entity_versions[0].data.description || ''}}",
+                      "onChange": {
+                        "action": "setState",
+                        "key": "editDescription",
+                        "value": "{{event.target.value}}"
+                      }
+                    }
+                  },
+                  {
+                    "type": "Button",
+                    "props": {
+                      "children": "Save Changes",
+                      "onClick": {
+                        "action": "sequence",
+                        "actions": [
+                          {
+                            "action": "apiCall",
+                            "operation": "insert",
+                            "table": "entity_versions",
+                            "data": {
+                              "entity_id": "{{data.entity.id}}",
+                              "version_number": "{{data.entity.entity_versions[0].version_number + 1}}",
+                              "data": {
+                                "name": "{{state.editName || data.entity.entity_versions[0].data.name}}",
+                                "description": "{{state.editDescription || data.entity.entity_versions[0].data.description}}"
+                              },
+                              "is_current": true
+                            },
+                            "onSuccess": {
+                              "action": "sequence",
+                              "actions": [
+                                { "action": "setState", "key": "isEditing", "value": false },
+                                { "action": "refetch", "source": "entity" }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "Card",
+        "props": { "title": "Version History" },
+        "children": [
+          {
+            "type": "Stack",
+            "props": { "spacing": 2 },
+            "children": [
+              {
+                "type": "Stack",
+                "each": "{{data.entity.entity_versions}}",
+                "as": "version",
+                "key": "{{version.id}}",
+                "props": {
+                  "direction": "horizontal",
+                  "justify": "between",
+                  "align": "center",
+                  "className": "p-3 border rounded-lg"
+                },
+                "children": [
+                  {
+                    "type": "Stack",
+                    "props": { "direction": "horizontal", "spacing": 4, "align": "center" },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "weight": "medium",
+                          "children": "Version {{version.version_number}}"
+                        }
+                      },
+                      {
+                        "type": "Badge",
+                        "if": "{{version.is_current}}",
+                        "props": {
+                          "children": "Current"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Stack",
+                    "props": {
+                      "spacing": 1,
+                      "align": "end"
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "variant": "muted",
+                          "size": "sm",
+                          "children": "{{version.is_current ? 'Current revision' : 'Previous revision'}}"
+                        }
+                      },
+                      {
+                        "type": "Text",
+                        "props": {
+                          "variant": "muted",
+                          "size": "sm",
+                          "format": "datetime",
+                          "children": "{{version.valid_from}}"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "modals": {
+    "confirmDelete": {
+      "title": "Delete Entity",
+      "size": "sm",
+      "content": {
+        "type": "Stack",
+        "props": { "spacing": 4 },
+        "children": [
+          {
+            "type": "Alert",
+            "props": {
+              "variant": "destructive",
+              "title": "Are you sure?",
+              "description": "This action cannot be undone. This will permanently delete the entity and all its versions."
+            }
+          },
+          {
+            "type": "Stack",
+            "props": { "direction": "horizontal", "justify": "end", "spacing": 2 },
+            "children": [
+              {
+                "type": "Button",
+                "props": {
+                  "variant": "outline",
+                  "children": "Cancel",
+                  "onClick": { "action": "closeModal" }
+                }
+              },
+              {
+                "type": "Button",
+                "props": {
+                  "variant": "destructive",
+                  "children": "Delete",
+                  "onClick": {
+                    "action": "sequence",
+                    "actions": [
+                      {
+                        "action": "apiCall",
+                        "operation": "delete",
+                        "table": "entities",
+                        "match": { "id": "{{params.id}}" },
+                        "onSuccess": {
+                          "action": "navigate",
+                          "to": "/entities/{{params.entityType}}",
+                          "replace": true
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

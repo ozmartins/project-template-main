@@ -1,0 +1,51 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openbao-selfsigned-bootstrap
+  namespace: openbao
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-internal-ca
+  namespace: openbao
+spec:
+  isCA: true
+  commonName: openbao-ca.openbao.svc.cluster.local
+  secretName: openbao-internal-ca
+  duration: 87600h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-selfsigned-bootstrap
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openbao-internal-ca
+  namespace: openbao
+spec:
+  ca:
+    secretName: openbao-internal-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-server-tls
+  namespace: openbao
+spec:
+  secretName: openbao-server-tls
+  # 90d cert lifetime with rotation starting 15d before expiry.
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: openbao-internal-ca
+    kind: Issuer
+  commonName: openbao.openbao.svc.cluster.local
+  dnsNames:
+    - openbao.openbao.svc
+    - openbao.openbao.svc.cluster.local
+    - openbao-active.openbao.svc
+    - openbao-active.openbao.svc.cluster.local

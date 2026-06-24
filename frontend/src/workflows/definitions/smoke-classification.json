@@ -1,0 +1,63 @@
+{
+  "name": "smoke-classification",
+  "version": "1.0.0",
+  "description": "Single-shot company classification with structured output for workflow trigger smoke testing.",
+  "input_schema": {
+    "type": "object",
+    "required": ["company_name", "domain"],
+    "properties": {
+      "company_name": { "type": "string", "title": "Company name", "minLength": 1 },
+      "domain": { "type": "string", "title": "Domain", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "steps": {
+    "sequence": {
+      "steps": [
+        {
+          "activity": {
+            "name": "llm_agent",
+            "args": {
+              "provider": "anthropic",
+              "model_id": "claude-haiku-4-5-20251001",
+              "system_prompt": "You are a company industry analyst. Classify companies accurately and concisely.",
+              "user_prompt": "Classify $input.company_name ($input.domain) into an industry vertical.",
+              "response_schema": {
+                "type": "object",
+                "required": ["vertical", "sub_vertical", "reasoning", "confidence"],
+                "properties": {
+                  "vertical": { "type": "string" },
+                  "sub_vertical": { "type": "string" },
+                  "reasoning": { "type": "string" },
+                  "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                },
+                "additionalProperties": false
+              },
+              "schema_name": "company_classification",
+              "temperature": 0,
+              "max_tokens": 400
+            },
+            "result": "classification",
+            "start_to_close_timeout": "60s",
+            "retry": { "max_attempts": 2 },
+            "output_schema": {
+              "type": "object",
+              "required": ["parsed"],
+              "properties": {
+                "parsed": {
+                  "type": "object",
+                  "required": ["vertical", "sub_vertical"],
+                  "properties": {
+                    "vertical": { "type": "string" },
+                    "sub_vertical": { "type": "string" }
+                  }
+                },
+                "content_filter_blocked": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

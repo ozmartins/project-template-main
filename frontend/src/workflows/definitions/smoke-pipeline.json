@@ -1,0 +1,18 @@
+{
+  "name": "smoke-pipeline",
+  "version": "1.0.0",
+  "description": "Minimal pipeline definition used to exercise definition-switch reseeding in tests.",
+  "input_schema": {
+    "type": "object",
+    "required": ["pipeline_name"],
+    "properties": {
+      "pipeline_name": { "type": "string", "title": "Pipeline name", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "steps": {
+    "sequence": {
+      "steps": []
+    }
+  }
+}

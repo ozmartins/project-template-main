@@ -1,0 +1,102 @@
+# Test profile for charts/app
+# Intended namespace: 10x-stack-test (use: helm install/upgrade ... -n 10x-stack-test)
+
+externalSecrets:
+  enabled: true
+  refreshInterval: 5m
+  environment: test
+  basePath: secret/data/project-template
+  secretStoreRef:
+    name: openbao-test
+    kind: SecretStore
+  frontend:
+    supabaseAnonKeyProperty: anon_key
+  backend:
+    supabaseServiceRoleKeyProperty: service_role_key
+
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+
+frontend:
+  replicaCount: 2
+  image:
+    # Keep test deployments on immutable CI-produced tags.
+    # Replace <git-sha> during deployment automation.
+    tag: "test-<git-sha>"
+    # Digest is set at deploy time to pin the exact promoted image.
+    # When set, the image is referenced as repo@sha256:… (tag is kept for audit).
+    digest: ""
+    pullPolicy: Always
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: frontend.<TEST_DOMAIN>
+        paths:
+          - path: /
+            pathType: Prefix
+  resources:
+    requests:
+      cpu: 150m
+      memory: 192Mi
+      ephemeral-storage: 100Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 500Mi
+  env:
+    supabaseUrl: "https://supabase.<TEST_DOMAIN>"
+    apiUrl: "https://api.<TEST_DOMAIN>/functions/v1"
+  secrets:
+    supabaseAnonKey:
+      secretName: "frontend-secrets-10x-stack-test"
+      key: "VITE_SUPABASE_ANON_KEY"
+
+temporalWorker:
+  replicaCount: 1
+  image:
+    # Keep test deployments on immutable CI-produced tags.
+    # Replace <git-sha> during deployment automation.
+    tag: "test-<git-sha>"
+    # Digest is set at deploy time to pin the exact promoted image.
+    digest: ""
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 150m
+      memory: 192Mi
+      ephemeral-storage: 100Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 500Mi
+  temporal:
+    address: "temporal-frontend.temporal.svc.cluster.local:7233"
+    namespace: "10x-stack-test"
+    taskQueue: "10x-stack-test-main"
+  supabase:
+    url: "https://supabase.<TEST_DOMAIN>"
+  secrets:
+    supabaseServiceRoleKey:
+      secretName: "temporal-worker-secrets-10x-stack-test"
+      key: "SUPABASE_SERVICE_ROLE_KEY"
+
+opsApi:
+  replicaCount: 1
+  image:
+    # Keep test deployments on immutable CI-produced tags.
+    # Replace <git-sha> during deployment automation.
+    tag: "test-<git-sha>"
+    # Digest is set at deploy time to pin the exact promoted image.
+    digest: ""
+    pullPolicy: Always
+  temporal:
+    address: "temporal-frontend.temporal.svc.cluster.local:7233"
+    namespace: "10x-stack-test"
+  supabase:
+    url: "https://supabase.<TEST_DOMAIN>"
+  secrets:
+    supabaseServiceRoleKey:
+      secretName: "temporal-worker-secrets-10x-stack-test"
+      key: "SUPABASE_SERVICE_ROLE_KEY"

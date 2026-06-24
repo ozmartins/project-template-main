@@ -1,0 +1,57 @@
+{{- if .Values.pdb.enabled }}
+{{- $frontendMinReplicas := int .Values.frontend.replicaCount }}
+{{- if .Values.hpa.enabled }}
+{{- $frontendMinReplicas = int .Values.hpa.frontend.minReplicas }}
+{{- end }}
+{{- if gt (int .Values.pdb.frontend.minAvailable) $frontendMinReplicas }}
+{{- fail "pdb.frontend.minAvailable must be less than or equal to the frontend minimum replica count" }}
+{{- end }}
+{{- $temporalWorkerMinReplicas := int .Values.temporalWorker.replicaCount }}
+{{- if .Values.hpa.enabled }}
+{{- $temporalWorkerMinReplicas = int .Values.hpa.temporalWorker.minReplicas }}
+{{- end }}
+{{- if gt (int .Values.pdb.temporalWorker.minAvailable) $temporalWorkerMinReplicas }}
+{{- fail "pdb.temporalWorker.minAvailable must be less than or equal to the temporalWorker minimum replica count" }}
+{{- end }}
+{{- if gt (int .Values.pdb.opsApi.minAvailable) (int .Values.opsApi.replicaCount) }}
+{{- fail "pdb.opsApi.minAvailable must be less than or equal to the opsApi replica count" }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "app.frontend.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  minAvailable: {{ .Values.pdb.frontend.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "app.frontend.selectorLabels" . | nindent 6 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "app.temporalWorker.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-worker
+spec:
+  minAvailable: {{ .Values.pdb.temporalWorker.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "app.temporalWorker.selectorLabels" . | nindent 6 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "app.opsApi.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ops-api
+spec:
+  minAvailable: {{ .Values.pdb.opsApi.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "app.opsApi.selectorLabels" . | nindent 6 }}
+{{- end }}

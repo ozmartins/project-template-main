@@ -1,0 +1,404 @@
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -- Global image registry prefix (e.g. "ghcr.io"). Overridden per-component by
+#    image.registry when set.
+imageRegistry: ""
+
+# ---------------------------------------------------------------------------
+# External Secrets Operator (ADR-0042)
+# ---------------------------------------------------------------------------
+externalSecrets:
+  # -- When true, render ExternalSecret resources that materialize the Secrets
+  #    consumed by Deployments via secretKeyRef.
+  enabled: false
+  # -- ESO refresh interval for syncing from OpenBao.
+  refreshInterval: 5m
+  # -- Environment segment used in OpenBao KV paths (e.g. dev/test/prod).
+  environment: dev
+  # -- Base KV v2 API path in OpenBao for this application. This includes the
+  #    /data/ segment used by KV v2 API reads.
+  basePath: secret/data/project-template
+  secretStoreRef:
+    # -- Namespace-scoped SecretStore name (e.g. openbao-dev).
+    name: openbao-dev
+    # -- SecretStore kind; normally SecretStore for namespace scoping.
+    kind: SecretStore
+  frontend:
+    # -- Property in OpenBao KV JSON for VITE_SUPABASE_ANON_KEY.
+    supabaseAnonKeyProperty: anon_key
+  backend:
+    # -- Property in OpenBao KV JSON for SUPABASE_SERVICE_ROLE_KEY.
+    supabaseServiceRoleKeyProperty: service_role_key
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy
+# ---------------------------------------------------------------------------
+networkPolicy:
+  # -- Enable NetworkPolicy resources (default-deny + component allowlists).
+  enabled: true
+  # -- Namespace where the ingress controller runs.
+  ingressControllerNamespace: ingress-nginx
+
+# ---------------------------------------------------------------------------
+# Frontend (React static bundle served by nginx)
+# ---------------------------------------------------------------------------
+frontend:
+  # -- Number of frontend pod replicas
+  replicaCount: 1
+
+  image:
+    # -- Container registry for the frontend image (overrides imageRegistry)
+    registry: ""
+    # -- Image repository. REQUIRED: replace with your actual image path before deploying
+    #    e.g. "ghcr.io/your-org/frontend"
+    repository: "your-org/frontend"
+    # -- Image tag (used when digest is empty; mutable tags should pair with pullPolicy: Always).
+    #    REQUIRED: replace with your actual image tag before deploying.
+    tag: "0.1.0"
+    # -- Image digest (sha256:…). When set, the image is referenced as repo@sha256:… and
+    #    the tag is ignored for the pull. Digest references are immutable; use pullPolicy:
+    #    IfNotPresent with digests, and Always with mutable tags.
+    digest: ""
+    # -- Image pull policy. Always is recommended for mutable tags to ensure the latest
+    #    image is used on every restart. Override to IfNotPresent when deploying with an
+    #    immutable digest or truly immutable tag.
+    pullPolicy: Always
+
+  # -- List of image pull secrets for the frontend pods
+  imagePullSecrets: []
+  # - name: my-registry-secret
+
+  serviceAccount:
+    # -- ServiceAccount name for frontend pods. Leave empty to use the chart-managed default name.
+    name: ""
+
+  # -- Pod-level security context for frontend pods
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+
+  # -- Container-level security context for the frontend container
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  service:
+    # -- Kubernetes Service type
+    type: ClusterIP
+    # -- Service port
+    port: 80
+
+  # -- Container port nginx listens on. Defaults to service.port if not set.
+  containerPort: 8080
+
+  ingress:
+    # -- Enable ingress for the frontend
+    enabled: false
+    # -- Ingress class name (e.g. "nginx")
+    className: ""
+    # -- Ingress annotations
+    annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: frontend.local
+        paths:
+          - path: /
+            pathType: Prefix
+    # -- TLS configuration
+    tls: []
+    # - secretName: frontend-tls
+    #   hosts:
+    #     - frontend.local
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 100Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 500Mi
+
+  livenessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # -- Non-secret environment variables for the frontend container
+  env:
+    # -- Supabase URL exposed to the browser
+    supabaseUrl: "http://supabase:8000"
+    # -- API base URL exposed to the browser
+    apiUrl: "http://supabase:8000/functions/v1"
+
+  # -- Secret references for frontend sensitive values.
+  #    The named Secret must be created in the same namespace before deploying.
+  secrets:
+    supabaseAnonKey:
+      # -- Name of the Kubernetes Secret containing VITE_SUPABASE_ANON_KEY
+      secretName: "frontend-secrets"
+      # -- Key within the Secret
+      key: "VITE_SUPABASE_ANON_KEY"
+
+# ---------------------------------------------------------------------------
+# Temporal Worker (TypeScript/Node.js)
+# ---------------------------------------------------------------------------
+temporalWorker:
+  # -- Number of temporal-worker pod replicas
+  replicaCount: 1
+
+  image:
+    # -- Container registry for the temporal-worker image (overrides imageRegistry)
+    registry: ""
+    # -- Image repository. REQUIRED: replace with your actual image path before deploying
+    #    e.g. "ghcr.io/your-org/temporal-worker"
+    repository: "your-org/temporal-worker"
+    # -- Image tag (used when digest is empty; mutable tags should pair with pullPolicy: Always).
+    #    REQUIRED: replace with your actual image tag before deploying.
+    tag: "0.1.0"
+    # -- Image digest (sha256:…). When set, the image is referenced as repo@sha256:… and
+    #    the tag is ignored for the pull. Digest references are immutable; use pullPolicy:
+    #    IfNotPresent with digests, and Always with mutable tags.
+    digest: ""
+    # -- Image pull policy. Always is recommended for mutable tags to ensure the latest
+    #    image is used on every restart. Override to IfNotPresent when deploying with an
+    #    immutable digest or truly immutable tag.
+    pullPolicy: Always
+
+  # -- List of image pull secrets for the temporal-worker pods
+  imagePullSecrets: []
+  # - name: my-registry-secret
+
+  serviceAccount:
+    # -- ServiceAccount name for temporal-worker pods. Leave empty to use the chart-managed default name.
+    name: ""
+
+  # -- Pod-level security context for temporal-worker pods
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+
+  # -- Container-level security context for the temporal-worker container
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 100Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 500Mi
+
+  livenessProbe:
+    exec:
+      command:
+        - sh
+        - -c
+        - "kill -0 1"
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+  readinessProbe:
+    exec:
+      command:
+        - sh
+        - -c
+        - "kill -0 1 2>/dev/null"
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # -- Temporal server connection settings (matches docker-compose.yml defaults)
+  temporal:
+    # -- Temporal server address (host:port)
+    address: "temporal:7233"
+    # -- Temporal namespace
+    namespace: "default"
+    # -- Task queue name. Leave empty to use "<release-namespace>-main".
+    taskQueue: ""
+
+  # -- Supabase non-secret settings for the worker
+  supabase:
+    # -- Supabase REST/API URL
+    url: "http://supabase:8000"
+
+  # -- Secret references for temporal-worker sensitive values.
+  #    The named Secret must be created in the same namespace before deploying.
+  secrets:
+    supabaseServiceRoleKey:
+      # -- Name of the Kubernetes Secret containing SUPABASE_SERVICE_ROLE_KEY
+      secretName: "temporal-worker-secrets"
+      # -- Key within the Secret
+      key: "SUPABASE_SERVICE_ROLE_KEY"
+
+# ---------------------------------------------------------------------------
+# Operations API (FastAPI bridge)
+# ---------------------------------------------------------------------------
+opsApi:
+  # -- Number of ops-api pod replicas
+  replicaCount: 1
+
+  image:
+    # -- Container registry for the ops-api image (overrides imageRegistry)
+    registry: ""
+    # -- Image repository. Typically the same image as temporal-worker.
+    repository: "your-org/temporal-worker"
+    # -- Image tag (used when digest is empty; mutable tags should pair with pullPolicy: Always).
+    #    REQUIRED: replace with your actual image tag before deploying.
+    tag: "0.1.0"
+    # -- Image digest (sha256:…). When set, the image is referenced as repo@sha256:… and
+    #    the tag is ignored for the pull. Digest references are immutable; use pullPolicy:
+    #    IfNotPresent with digests, and Always with mutable tags.
+    digest: ""
+    # -- Image pull policy. Always is recommended for mutable tags to ensure the latest
+    #    image is used on every restart. Override to IfNotPresent when deploying with an
+    #    immutable digest or truly immutable tag.
+    pullPolicy: Always
+
+  # -- List of image pull secrets for the ops-api pods
+  imagePullSecrets: []
+
+  serviceAccount:
+    # -- ServiceAccount name for ops-api pods. Leave empty to use the chart-managed default name.
+    name: ""
+
+  # -- Pod-level security context for ops-api pods
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+
+  # -- Container-level security context for the ops-api container
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  service:
+    # -- Kubernetes Service type for the ops-api
+    type: ClusterIP
+    # -- Service port for the ops-api
+    port: 8000
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 100Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 500Mi
+
+  # -- Liveness probe: tcpSocket (not httpGet) to avoid identical probe pair with readinessProbe.
+  #    A TCP check is sufficient to confirm the process is alive; the readiness httpGet
+  #    provides the richer HTTP-level health signal.
+  livenessProbe:
+    tcpSocket:
+      port: 8000
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  temporal:
+    # -- Temporal server address (host:port)
+    address: "temporal:7233"
+    # -- Temporal namespace
+    namespace: "default"
+
+  supabase:
+    # -- Supabase REST/API URL
+    url: "http://supabase:8000"
+
+  # -- Secret references for ops-api sensitive values.
+  secrets:
+    supabaseServiceRoleKey:
+      # -- Name of the Kubernetes Secret containing SUPABASE_SERVICE_ROLE_KEY
+      secretName: "temporal-worker-secrets"
+      # -- Key within the Secret
+      key: "SUPABASE_SERVICE_ROLE_KEY"
+
+# ---------------------------------------------------------------------------
+# Reliability
+# ---------------------------------------------------------------------------
+hpa:
+  # -- Enable HorizontalPodAutoscaler resources for frontend and temporal-worker.
+  #    Requires Kubernetes Metrics Server (or another compatible metrics API provider).
+  enabled: false
+  frontend:
+    # -- Minimum number of frontend replicas when HPA is enabled
+    minReplicas: 2
+    # -- Maximum number of frontend replicas when HPA is enabled
+    maxReplicas: 10
+    # -- Target average CPU utilization percentage for the frontend HPA
+    targetCPUUtilization: 70
+  temporalWorker:
+    # -- Minimum number of temporal-worker replicas when HPA is enabled
+    minReplicas: 1
+    # -- Maximum number of temporal-worker replicas when HPA is enabled
+    maxReplicas: 5
+    # -- Target average CPU utilization percentage for the temporal-worker HPA
+    targetCPUUtilization: 70
+
+pdb:
+  # -- Enable PodDisruptionBudget resources for frontend and temporal-worker
+  enabled: true
+  frontend:
+    # -- Minimum number of frontend pods that must remain available during voluntary disruptions
+    minAvailable: 1
+  temporalWorker:
+    # -- Minimum number of temporal-worker pods that must remain available during voluntary disruptions
+    minAvailable: 1
+  opsApi:
+    # -- Minimum number of ops-api pods that must remain available during voluntary disruptions
+    minAvailable: 1

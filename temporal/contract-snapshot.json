@@ -1,0 +1,497 @@
+{
+  "activities": [
+    {
+      "name": "append_event",
+      "params": [
+        "_idempotency_key",
+        "actor_id",
+        "correlation_id",
+        "entity_id",
+        "entity_type",
+        "event_data",
+        "event_type"
+      ]
+    },
+    {
+      "name": "complete_execution",
+      "params": [
+        "definition_name",
+        "definition_version",
+        "error_message",
+        "output_payload",
+        "run_id",
+        "status",
+        "workflow_id"
+      ]
+    },
+    {
+      "name": "create_entity",
+      "params": ["_idempotency_key", "attributes", "created_by", "entity_type"]
+    },
+    {
+      "name": "create_relationship",
+      "params": [
+        "_idempotency_key",
+        "attributes",
+        "from_entity_id",
+        "relationship_type",
+        "to_entity_id"
+      ]
+    },
+    {
+      "name": "data_validate",
+      "params": [
+        "_idempotency_key",
+        "coerce",
+        "data",
+        "rules",
+        "schema",
+        "throw_on_invalid",
+        "transform"
+      ]
+    },
+    {
+      "name": "domain_probe",
+      "params": ["_idempotency_key", "max_redirects", "timeout", "url"]
+    },
+    {
+      "name": "email_send",
+      "params": ["_idempotency_key", "body_html", "body_text", "from", "reply_to", "subject", "to"]
+    },
+    {
+      "name": "evaluate_decision",
+      "params": ["_idempotency_key", "input", "table", "version"]
+    },
+    {
+      "name": "file_extract",
+      "params": [
+        "_idempotency_key",
+        "extraction_schema",
+        "max_extraction_chars",
+        "mime_type",
+        "url"
+      ]
+    },
+    {
+      "name": "get_entity",
+      "params": ["_idempotency_key", "entity_id"]
+    },
+    {
+      "name": "http_request",
+      "params": [
+        "_idempotency_key",
+        "auth",
+        "body",
+        "expected_status",
+        "headers",
+        "method",
+        "non_retryable_status",
+        "result_path",
+        "timeout",
+        "url"
+      ]
+    },
+    {
+      "name": "llm_agent",
+      "params": [
+        "_idempotency_key",
+        "max_tokens",
+        "max_tool_rounds",
+        "mcp_servers",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "tools",
+        "user_prompt"
+      ]
+    },
+    {
+      "name": "llm_embeddings",
+      "params": ["_idempotency_key", "model_id", "provider", "texts"]
+    },
+    {
+      "name": "record_step",
+      "params": [
+        "error_message",
+        "input_preview",
+        "output_preview",
+        "started_at",
+        "status",
+        "step_index",
+        "step_name",
+        "workflow_id"
+      ]
+    },
+    {
+      "name": "resolveRunAt",
+      "params": []
+    },
+    {
+      "name": "schedule_trigger",
+      "params": ["_idempotency_key", "run_at", "workflow_id", "workflow_input"]
+    },
+    {
+      "name": "send_email",
+      "params": ["_idempotency_key", "body", "subject", "to"]
+    },
+    {
+      "name": "send_notification",
+      "params": ["_idempotency_key", "channel", "data", "message", "template", "user_id"]
+    },
+    {
+      "name": "slack_message",
+      "params": ["_idempotency_key", "blocks", "channel", "text", "thread_ts"]
+    },
+    {
+      "name": "supabase_mutate",
+      "params": [
+        "_idempotency_key",
+        "created_by",
+        "data",
+        "entity_id",
+        "entity_type",
+        "match",
+        "operation",
+        "source_record_id",
+        "table",
+        "updated_by",
+        "values"
+      ]
+    },
+    {
+      "name": "supabase_query",
+      "params": ["_idempotency_key", "mode", "params", "query", "result_shape"]
+    },
+    {
+      "name": "transform_data",
+      "params": ["_idempotency_key", "input", "mapping"]
+    },
+    {
+      "name": "update_entity_scd2",
+      "params": ["_idempotency_key", "attributes", "entity_id", "updated_by"]
+    },
+    {
+      "name": "vector_search",
+      "params": [
+        "_idempotency_key",
+        "content_column",
+        "embedding_column",
+        "limit",
+        "model_id",
+        "provider",
+        "query",
+        "table",
+        "threshold"
+      ]
+    },
+    {
+      "name": "web_crawl",
+      "params": ["_idempotency_key", "max_chars", "subpages", "url"]
+    },
+    {
+      "name": "web_search",
+      "params": ["_idempotency_key", "max_chars", "num_results", "query"]
+    }
+  ],
+  "definitions": [
+    {
+      "file": "content-moderation.json",
+      "workflow": "content-moderation",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "content-moderation.json",
+      "workflow": "content-moderation",
+      "activity": "supabase_mutate",
+      "inputKeys": ["created_by", "data", "entity_type", "operation", "source_record_id"]
+    },
+    {
+      "file": "content-moderation.json",
+      "workflow": "content-moderation",
+      "activity": "web_crawl",
+      "inputKeys": ["max_chars", "subpages", "url"]
+    },
+    {
+      "file": "doc-extraction.json",
+      "workflow": "doc-extraction",
+      "activity": "http_request",
+      "inputKeys": ["expected_status", "method", "url"]
+    },
+    {
+      "file": "doc-extraction.json",
+      "workflow": "doc-extraction",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "doc-extraction.json",
+      "workflow": "doc-extraction",
+      "activity": "send_notification",
+      "inputKeys": ["channel", "data", "message", "user_id"]
+    },
+    {
+      "file": "doc-extraction.json",
+      "workflow": "doc-extraction",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "doc-extraction.json",
+      "workflow": "doc-extraction",
+      "activity": "transform_data",
+      "inputKeys": ["input", "mapping"]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "create_entity",
+      "inputKeys": ["attributes", "created_by", "entity_type"]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "create_entity",
+      "inputKeys": ["attributes", "created_by", "entity_type"]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "data_validate",
+      "inputKeys": ["data", "rules"]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "email_send",
+      "inputKeys": ["_idempotency_key", "body_html", "body_text", "subject", "to"]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "file_extract",
+      "inputKeys": ["mime_type", "url"]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "invoice-processing.json",
+      "workflow": "invoice-processing",
+      "activity": "update_entity_scd2",
+      "inputKeys": ["attributes", "entity_id", "updated_by"]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "web_crawl",
+      "inputKeys": ["max_chars", "subpages", "url"]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "web_search",
+      "inputKeys": ["max_chars", "num_results", "query"]
+    },
+    {
+      "file": "lead-enrichment.json",
+      "workflow": "lead-enrichment",
+      "activity": "web_search",
+      "inputKeys": ["max_chars", "num_results", "query"]
+    },
+    {
+      "file": "research-report.json",
+      "workflow": "research-report",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "research-report.json",
+      "workflow": "research-report",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "max_tool_rounds",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "tools",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "research-report.json",
+      "workflow": "research-report",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "research-report.json",
+      "workflow": "research-report",
+      "activity": "web_search",
+      "inputKeys": ["num_results", "query"]
+    },
+    {
+      "file": "smoke-classification.json",
+      "workflow": "smoke-classification",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "domain_probe",
+      "inputKeys": ["url"]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "max_tool_rounds",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "tools",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "llm_agent",
+      "inputKeys": [
+        "max_tokens",
+        "model_id",
+        "provider",
+        "response_schema",
+        "schema_name",
+        "system_prompt",
+        "temperature",
+        "user_prompt"
+      ]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "supabase_mutate",
+      "inputKeys": ["match", "operation", "table", "values"]
+    },
+    {
+      "file": "vertical-classification.json",
+      "workflow": "vertical-classification",
+      "activity": "web_search",
+      "inputKeys": ["num_results", "query"]
+    }
+  ]
+}

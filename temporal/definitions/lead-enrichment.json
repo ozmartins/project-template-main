@@ -1,0 +1,272 @@
+{
+  "name": "lead-enrichment",
+  "version": "1.0.0",
+  "description": "Enrich a contact from public sources and persist a current contact entity snapshot with provenance.",
+  "input_schema": {
+    "type": "object",
+    "required": ["person_name", "company_name"],
+    "properties": {
+      "person_name": { "type": "string", "title": "Person name", "minLength": 1 },
+      "company_name": { "type": "string", "title": "Company name", "minLength": 1 },
+      "company_domain": { "type": "string", "title": "Company domain", "minLength": 1 },
+      "source_id": { "type": "string", "title": "Deterministic source key", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "variables": {
+    "contact_source_key": null,
+    "confidence": 0,
+    "review_status": "review_needed",
+    "entity_id": null
+  },
+  "steps": {
+    "sequence": {
+      "steps": [
+        {
+          "set_variable": {
+            "name": "contact_source_key",
+            "value": "$input.source_id"
+          }
+        },
+        {
+          "condition": {
+            "if": "$var.contact_source_key == null or $var.contact_source_key == ''",
+            "then": {
+              "set_variable": {
+                "name": "contact_source_key",
+                "value": "$input.person_name::$input.company_name"
+              }
+            }
+          }
+        },
+        {
+          "activity": {
+            "name": "web_search",
+            "args": {
+              "query": "$input.person_name $input.company_name LinkedIn",
+              "num_results": 5,
+              "max_chars": 300
+            },
+            "result": "linkedin_search",
+            "start_to_close_timeout": "30s",
+            "retry": { "max_attempts": 2 }
+          }
+        },
+        {
+          "condition": {
+            "if": "$input.company_domain != null and $input.company_domain != ''",
+            "then": {
+              "activity": {
+                "name": "web_crawl",
+                "args": {
+                  "url": "https://$input.company_domain",
+                  "subpages": 2,
+                  "max_chars": 2000
+                },
+                "result": "company_crawl",
+                "start_to_close_timeout": "60s",
+                "retry": { "max_attempts": 2 }
+              }
+            },
+            "else": {
+              "set_variable": {
+                "name": "company_crawl",
+                "value": {
+                  "url": "",
+                  "pages": []
+                }
+              }
+            }
+          }
+        },
+        {
+          "activity": {
+            "name": "web_search",
+            "args": {
+              "query": "$input.company_name news funding",
+              "num_results": 5,
+              "max_chars": 300
+            },
+            "result": "company_news",
+            "start_to_close_timeout": "30s",
+            "retry": { "max_attempts": 2 }
+          }
+        },
+        {
+          "activity": {
+            "name": "llm_agent",
+            "args": {
+              "system_prompt": "You are a B2B contact enrichment analyst. Use only evidence from the supplied public-source snippets and return strict JSON.",
+              "user_prompt": "Person: $input.person_name\\nCompany: $input.company_name\\nCompany domain: $input.company_domain\\n\\nLinkedIn-oriented search hits:\\n$var.linkedin_search\\n\\nCompany crawl pages:\\n$var.company_crawl\\n\\nCompany news/funding search hits:\\n$var.company_news\\n\\nExtract the contact enrichment profile and include citations in sources[]. If uncertain, lower confidence.",
+              "provider": "anthropic",
+              "model_id": "claude-sonnet-4-6",
+              "response_schema": {
+                "type": "object",
+                "required": ["job_title", "seniority", "company", "confidence", "sources", "observed_at"],
+                "properties": {
+                  "job_title": { "type": "string", "minLength": 1 },
+                  "seniority": { "type": "string", "minLength": 1 },
+                  "department": { "type": ["string", "null"] },
+                  "company": { "type": "string", "minLength": 1 },
+                  "company_size": { "type": ["string", "null"] },
+                  "recent_news": { "type": ["string", "null"] },
+                  "email_pattern": { "type": ["string", "null"] },
+                  "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                  "sources": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["url", "title"],
+                      "properties": {
+                        "url": { "type": "string", "minLength": 1 },
+                        "title": { "type": "string", "minLength": 1 },
+                        "snippet": { "type": ["string", "null"] }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "observed_at": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              },
+              "schema_name": "lead_enrichment",
+              "temperature": 0,
+              "max_tokens": 1000
+            },
+            "result": "enrichment_extraction",
+            "start_to_close_timeout": "120s",
+            "retry": { "max_attempts": 3 }
+          }
+        },
+        {
+          "set_variable": {
+            "name": "confidence",
+            "value": "$var.enrichment_extraction.parsed.confidence"
+          }
+        },
+        {
+          "condition": {
+            "if": "$var.confidence >= 0.7",
+            "then": {
+              "set_variable": {
+                "name": "review_status",
+                "value": "ready"
+              }
+            },
+            "else": {
+              "set_variable": {
+                "name": "review_status",
+                "value": "review_needed"
+              }
+            }
+          }
+        },
+        {
+          "activity": {
+            "name": "supabase_mutate",
+            "args": {
+              "table": "entities",
+              "operation": "upsert",
+              "match": {
+                "entity_type": "contact",
+                "source_record_id": "$var.contact_source_key"
+              },
+              "values": {}
+            },
+            "result": "contact_entity",
+            "start_to_close_timeout": "20s",
+            "retry": { "max_attempts": 3 }
+          }
+        },
+        {
+          "condition": {
+            "if": "$var.confidence >= 0.7",
+            "then": {
+              "activity": {
+                "name": "supabase_mutate",
+                "args": {
+                  "table": "entity_versions",
+                  "operation": "upsert",
+                  "match": {
+                    "entity_id": "$var.contact_entity.id",
+                    "version_number": 1
+                  },
+                  "values": {
+                    "is_current": true,
+                    "data": {
+                      "person_name": "$input.person_name",
+                      "company": "$var.enrichment_extraction.parsed.company",
+                      "company_domain": "$input.company_domain",
+                      "job_title": "$var.enrichment_extraction.parsed.job_title",
+                      "seniority": "$var.enrichment_extraction.parsed.seniority",
+                      "department": "$var.enrichment_extraction.parsed.department",
+                      "company_size": "$var.enrichment_extraction.parsed.company_size",
+                      "recent_news": "$var.enrichment_extraction.parsed.recent_news",
+                      "email_pattern": "$var.enrichment_extraction.parsed.email_pattern",
+                      "confidence": "$var.confidence",
+                      "review_status": "$var.review_status",
+                      "provenance": {
+                        "sources": "$var.enrichment_extraction.parsed.sources",
+                        "model": "$var.enrichment_extraction.model",
+                        "provider": "$var.enrichment_extraction.provider",
+                        "observed_at": "$var.enrichment_extraction.parsed.observed_at"
+                      }
+                    }
+                  }
+                },
+                "result": "contact_version",
+                "start_to_close_timeout": "20s",
+                "retry": { "max_attempts": 3 }
+              }
+            },
+            "else": {
+              "activity": {
+                "name": "supabase_mutate",
+                "args": {
+                  "table": "entity_versions",
+                  "operation": "upsert",
+                  "match": {
+                    "entity_id": "$var.contact_entity.id",
+                    "version_number": 1
+                  },
+                  "values": {
+                    "is_current": false,
+                    "data": {
+                      "person_name": "$input.person_name",
+                      "company": "$var.enrichment_extraction.parsed.company",
+                      "company_domain": "$input.company_domain",
+                      "job_title": "$var.enrichment_extraction.parsed.job_title",
+                      "seniority": "$var.enrichment_extraction.parsed.seniority",
+                      "department": "$var.enrichment_extraction.parsed.department",
+                      "company_size": "$var.enrichment_extraction.parsed.company_size",
+                      "recent_news": "$var.enrichment_extraction.parsed.recent_news",
+                      "email_pattern": "$var.enrichment_extraction.parsed.email_pattern",
+                      "confidence": "$var.confidence",
+                      "review_status": "$var.review_status",
+                      "provenance": {
+                        "sources": "$var.enrichment_extraction.parsed.sources",
+                        "model": "$var.enrichment_extraction.model",
+                        "provider": "$var.enrichment_extraction.provider",
+                        "observed_at": "$var.enrichment_extraction.parsed.observed_at"
+                      }
+                    }
+                  }
+                },
+                "result": "contact_version",
+                "start_to_close_timeout": "20s",
+                "retry": { "max_attempts": 3 }
+              }
+            }
+          }
+        },
+        {
+          "set_variable": {
+            "name": "entity_id",
+            "value": "$var.contact_entity.id"
+          }
+        }
+      ]
+    }
+  }
+}

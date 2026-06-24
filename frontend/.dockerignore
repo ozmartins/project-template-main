@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+.env*
+*.test.ts
+*.spec.ts
+playwright-report
+test-results
+.git
+.github

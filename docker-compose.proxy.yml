@@ -1,0 +1,39 @@
+name: 10x-stack-template
+
+# HTTPS proxy overlay for local development.
+# Adds a Traefik container as the single TLS-terminating entry point on
+# 127.0.0.1:443 and removes direct port bindings from downstream services.
+#
+# No host prerequisites — run `make up-https` and certs are generated automatically.
+# The self-signed cert triggers a browser warning; click "Accept" once per browser.
+#
+# Usage:
+#   make up-https   (generates cert if needed, starts supabase + compose + proxy)
+#
+# Access:
+#   App          https://localhost
+#   Temporal UI  https://localhost/temporal
+#   Supabase API https://localhost/rest/v1
+
+services:
+  proxy:
+    image: traefik:v3.0
+    container_name: proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:80:80"
+    volumes:
+      - ./certs/local:/certs:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Remove direct port bindings — all access goes through the proxy.
+  # The containers remain reachable on the Docker bridge network.
+  temporal-ui:
+    ports: []
+
+  frontend:
+    ports: []

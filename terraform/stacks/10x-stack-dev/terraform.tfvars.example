@@ -1,0 +1,11 @@
+# Copy this to terraform.tfvars and fill in values.
+# terraform.tfvars is gitignored — never commit credentials.
+
+aks_host      = "https://<aks-api-server>"
+aks_ca_cert   = "<base64-ca>"
+tenant_id     = "<azure-tenant-id>"
+client_id     = "<sp-client-id>"
+client_secret = "<sp-client-secret>"
+acr_username  = "<acr-admin-username>"
+acr_password  = "<acr-admin-password>"
+github_token  = "<github-pat>"

@@ -1,0 +1,111 @@
+# AWS dev profile for charts/app
+# Intended namespace: 10x-stack-dev on EKS (dev-eks-cluster, us-east-1)
+# Images pulled from ECR via node IAM role — no imagePullSecrets required.
+# imageRegistry + image tags are set at deploy time (deploy-dev.yml --set ...);
+# the rest reflects the validated live config.
+
+# ECR image registry — set at deploy time via imageRegistry override
+# e.g. --set imageRegistry=354918379520.dkr.ecr.us-east-1.amazonaws.com
+imageRegistry: ""
+
+externalSecrets:
+  # Terraform manages ESO SecretStores + ExternalSecrets directly for the AWS stack;
+  # disable chart-managed creation to avoid conflicts.
+  enabled: false
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: "frontend"
+    tag: "dev-latest"
+    digest: ""
+    pullPolicy: Always
+  # No imagePullSecrets — ECR access via node IAM role
+  imagePullSecrets: []
+  service:
+    # NLB on EKS — no AFD source range restrictions; CloudFront is the WAF layer
+    type: LoadBalancer
+    port: 8080
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    loadBalancerSourceRanges: []
+  # Liveness uses tcpSocket to avoid identical probe pair with readinessProbe (kube-score CRITICAL).
+  livenessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  ingress:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  env:
+    # Placeholder — Terraform overrides this with the CloudFront URL after apply
+    supabaseUrl: "https://placeholder.cloudfront.net"
+    apiUrl: "https://placeholder.cloudfront.net/functions/v1"
+  secrets:
+    supabaseAnonKey:
+      secretName: "frontend-secrets-10x-stack-dev"
+      key: "VITE_SUPABASE_ANON_KEY"
+
+temporalWorker:
+  replicaCount: 1
+  image:
+    repository: "temporal-worker"
+    tag: "dev-latest"
+    digest: ""
+    pullPolicy: Always
+  imagePullSecrets: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+  temporal:
+    address: "temporal-frontend.dev.svc.cluster.local:7233"
+    namespace: "10x-stack-dev"
+    taskQueue: "10x-stack-dev-main"
+  supabase:
+    url: "http://supabase-supabase-kong.10x-stack-supabase.svc.cluster.local"
+  secrets:
+    supabaseServiceRoleKey:
+      secretName: "temporal-worker-secrets-10x-stack-dev"
+      key: "SUPABASE_SERVICE_ROLE_KEY"
+
+opsApi:
+  # opsApi liveness probe inherits tcpSocket :8000 from values.yaml (kube-score CRITICAL fix, #1012);
+  # no override needed here.
+  replicaCount: 1
+  image:
+    repository: "temporal-worker"
+    tag: "dev-latest"
+    digest: ""
+    pullPolicy: Always
+  imagePullSecrets: []
+  temporal:
+    address: "temporal-frontend.dev.svc.cluster.local:7233"
+    namespace: "10x-stack-dev"
+  supabase:
+    url: "http://supabase-supabase-kong.10x-stack-supabase.svc.cluster.local"
+  secrets:
+    supabaseServiceRoleKey:
+      secretName: "temporal-worker-secrets-10x-stack-dev"
+      key: "SUPABASE_SERVICE_ROLE_KEY"

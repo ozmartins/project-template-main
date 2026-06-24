@@ -1,0 +1,32 @@
+password: ""
+database: app
+user: postgres
+
+persistence:
+  size: "1Gi"
+  storageClass: ""  # set to gp2 on EKS, managed-premium on AKS
+
+backup:
+  enabled: false
+  # schedule: daily at 02:00 UTC
+  schedule: "0 2 * * *"
+  # image must include the az CLI (azure-cli)
+  image: "mcr.microsoft.com/azure-cli:2.61.0"
+  storageConnectionString: ""
+  storageContainer: "postgres-backups"
+  retentionDays: "30"
+
+pgbouncer:
+  enabled: false
+  # pool_mode: transaction-level pooling reduces idle connections while preserving
+  # SET LOCAL semantics required by the RLS withTenantContext wrapper.
+  # NOTE: SET LOCAL is transaction-scoped; transaction-mode pooling is safe here because
+  # each withTenantContext call wraps exactly one transaction per request.
+  poolMode: transaction
+  maxClientConn: 100
+  defaultPoolSize: 20
+  minPoolSize: 5
+  reservePoolSize: 5
+  reservePoolTimeout: 30
+  maxDbConnections: 50
+  image: pgbouncer/pgbouncer:1.15.0

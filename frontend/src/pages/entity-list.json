@@ -1,0 +1,284 @@
+{
+  "id": "entity-list",
+  "title": "{{params.entityType}} Entities",
+  "state": {
+    "searchText": "",
+    "selectedId": null
+  },
+  "dataSources": {
+    "entities": {
+      "type": "supabase",
+      "table": "entities",
+      "select": "id, entity_type, source_record_id, created_at, entity_versions!inner(id, data, is_current, version_number)",
+      "filters": [
+        { "field": "entity_type", "op": "eq", "value": "{{params.entityType}}" },
+        { "field": "entity_versions.is_current", "op": "eq", "value": true },
+        { "field": "entity_versions.data->>name", "op": "ilike", "value": "%{{state.searchText}}%" }
+      ],
+      "order": [{ "column": "created_at", "ascending": false }]
+    },
+    "filteredEntities": {
+      "type": "computed",
+      "from": "entities",
+      "search": {
+        "fields": ["entity_versions[0].data.name", "entity_versions[0].data.description"],
+        "query": "{{state.searchText}}"
+      }
+    }
+  },
+  "layout": {
+    "type": "Stack",
+    "props": { "spacing": 6 },
+    "children": [
+      {
+        "type": "Stack",
+        "props": { "direction": "horizontal", "justify": "between", "align": "center" },
+        "children": [
+          {
+            "type": "Stack",
+            "props": { "spacing": 1 },
+            "children": [
+              {
+                "type": "Heading",
+                "props": { "level": 1, "children": "{{params.entityType}}" }
+              },
+              {
+                "type": "Text",
+                "props": { "variant": "muted", "children": "Manage your entities" }
+              }
+            ]
+          },
+          {
+            "type": "Button",
+            "if": "{{auth.canWrite}}",
+            "props": {
+              "children": "New Entity",
+              "onClick": { "action": "openModal", "modalId": "createEntity" }
+            }
+          }
+        ]
+      },
+      {
+        "type": "Card",
+        "children": [
+          {
+            "type": "Stack",
+            "props": { "spacing": 4 },
+            "children": [
+              {
+                "type": "Input",
+                "props": {
+                  "placeholder": "Search entities...",
+                  "value": "{{state.searchText}}",
+                  "onChange": {
+                    "action": "setState",
+                    "key": "searchText",
+                    "value": "{{event.target.value}}"
+                  }
+                }
+              },
+              {
+                "type": "Stack",
+                "props": { "spacing": 2 },
+                "children": [
+                  {
+                    "type": "Stack",
+                    "each": "{{data.filteredEntities}}",
+                    "as": "entity",
+                    "key": "{{entity.id}}",
+                    "props": {
+                      "direction": "horizontal",
+                      "justify": "between",
+                      "align": "center",
+                      "data-testid": "entity-list-row",
+                      "className": "p-4 border rounded-lg hover:bg-muted/50 cursor-pointer"
+                    },
+                    "children": [
+                      {
+                        "type": "Stack",
+                        "props": { "spacing": 1 },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "weight": "medium",
+                              "children": "{{entity.entity_versions[0].data.name || entity.id}}"
+                            }
+                          },
+                          {
+                            "type": "Text",
+                            "props": {
+                              "variant": "muted",
+                              "size": "sm",
+                              "children": "{{entity.entity_versions[0].data.description || 'No description'}}"
+                            }
+                          },
+                          {
+                            "type": "Text",
+                            "props": {
+                              "variant": "muted",
+                              "size": "sm",
+                              "className": "text-xs",
+                              "children": "ID: {{entity.id}}"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Stack",
+                        "props": { "direction": "horizontal", "spacing": 2 },
+                        "children": [
+                          {
+                            "type": "Badge",
+                            "props": {
+                              "variant": "secondary",
+                              "children": "v{{entity.entity_versions[0].version_number}}"
+                            }
+                          },
+                          {
+                            "type": "Button",
+                            "props": {
+                              "variant": "outline",
+                              "size": "sm",
+                              "children": "View",
+                              "onClick": {
+                                "action": "navigate",
+                                "to": "/entities/{{params.entityType}}/{{entity.id}}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Stack",
+                "if": "{{!data.filteredEntities || data.filteredEntities.length === 0}}",
+                "props": { "spacing": 3, "align": "center", "className": "text-center py-8" },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "variant": "muted",
+                      "children": "{{state.searchText ? 'No entities match your search. Clear search or create a new entity.' : 'No entities found. Create your first one!'}}"
+                    }
+                  },
+                  {
+                    "type": "Stack",
+                    "props": { "direction": "horizontal", "spacing": 2, "justify": "center" },
+                    "children": [
+                      {
+                        "type": "Button",
+                        "if": "{{state.searchText}}",
+                        "props": {
+                          "variant": "outline",
+                          "children": "Clear search",
+                          "onClick": { "action": "setState", "key": "searchText", "value": "" }
+                        }
+                      },
+                      {
+                        "type": "Button",
+                        "props": {
+                          "children": "New Entity",
+                          "onClick": { "action": "openModal", "modalId": "createEntity" }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "modals": {
+    "createEntity": {
+      "title": "Create New {{params.entityType}}",
+      "size": "md",
+      "content": {
+        "type": "Stack",
+        "props": { "spacing": 4 },
+        "children": [
+          {
+            "type": "Input",
+            "props": {
+              "label": "Name",
+              "placeholder": "Enter entity name",
+              "name": "name",
+              "value": "{{state.newEntityName || ''}}",
+              "onChange": {
+                "action": "setState",
+                "key": "newEntityName",
+                "value": "{{event.target.value}}"
+              }
+            }
+          },
+          {
+            "type": "Textarea",
+            "props": {
+              "label": "Description",
+              "placeholder": "Enter description (optional)",
+              "name": "description",
+              "value": "{{state.newEntityDescription || ''}}",
+              "onChange": {
+                "action": "setState",
+                "key": "newEntityDescription",
+                "value": "{{event.target.value}}"
+              }
+            }
+          },
+          {
+            "type": "Stack",
+            "props": { "direction": "horizontal", "justify": "end", "spacing": 2 },
+            "children": [
+              {
+                "type": "Button",
+                "props": {
+                  "variant": "outline",
+                  "children": "Cancel",
+                  "onClick": { "action": "closeModal" }
+                }
+              },
+              {
+                "type": "Button",
+                "props": {
+                  "children": "Create",
+                  "onClick": {
+                    "action": "sequence",
+                    "actions": [
+                      {
+                        "action": "apiCall",
+                        "operation": "rpc",
+                        "function": "create_entity_with_version",
+                        "data": {
+                          "p_entity_type": "{{params.entityType}}",
+                          "p_data": {
+                            "name": "{{state.newEntityName}}",
+                            "description": "{{state.newEntityDescription}}"
+                          }
+                        },
+                        "onSuccess": {
+                          "action": "sequence",
+                          "actions": [
+                            { "action": "closeModal" },
+                            { "action": "setState", "key": "newEntityName", "value": "" },
+                            { "action": "setState", "key": "newEntityDescription", "value": "" },
+                            { "action": "refetch", "source": "entities" }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

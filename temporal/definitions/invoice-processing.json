@@ -1,0 +1,359 @@
+{
+  "name": "invoice-processing",
+  "version": "1.0.0",
+  "description": "Accounts-payable workflow: fetch and extract structured data from an invoice document (PDF, HTML, DOCX, XLSX, or plain text), validate against business rules, route for manager approval when above the configured threshold, persist via the entity model, and notify the finance team.",
+
+  "input_schema": {
+    "type": "object",
+    "required": ["submitted_by", "invoice_url"],
+    "properties": {
+      "invoice_url":                { "type": "string",            "description": "Publicly reachable URL of the invoice document (PDF, HTML, DOCX, XLSX, or plain text)." },
+      "mime_type":                  { "type": "string",            "default": "application/pdf", "description": "MIME type hint. When omitted, file_extract infers from the Content-Type response header." },
+      "submitted_by":               { "type": "string",            "minLength": 1, "description": "User or system identity that submitted the invoice." },
+      "finance_team_email":         { "type": "string",            "description": "Destination address for finance-team notifications." }
+    },
+    "additionalProperties": false
+  },
+
+  "variables": {
+    "invoice_amount":             0,
+    "invoice_currency":           "USD",
+    "invoice_entity_id":          null,
+    "invoice_status":             "pending_validation",
+    "approval_threshold_amount":  10000
+  },
+
+  "steps": {
+    "sequence": {
+      "steps": [
+
+        {
+          "activity": {
+            "name": "file_extract",
+            "args": {
+              "url":       "$input.invoice_url",
+              "mime_type": "$input.mime_type"
+            },
+            "result": "extracted_file",
+            "start_to_close_timeout": "60s",
+            "retry": { "max_attempts": 3, "initial_interval": "2s" },
+            "output_schema": {
+              "type": "object",
+              "required": ["text"],
+              "properties": {
+                "text":  { "type": "string" },
+                "pages": { "type": "number" }
+              }
+            }
+          }
+        },
+
+        {
+          "activity": {
+            "name": "llm_agent",
+            "args": {
+              "system_prompt": "You are an invoice data extraction specialist. Extract all structured fields from the invoice text below. Respond with ONLY valid JSON matching the provided schema. Do not include markdown fences or explanation.",
+              "user_prompt": "Extract all invoice fields from the following document text:\n\n$var.extracted_file.text",
+              "provider":    "anthropic",
+              "model_id":    "claude-haiku-4-5-20251001",
+              "response_schema": {
+                "type": "object",
+                "required": ["vendor", "invoice_number", "invoice_date", "amount", "currency"],
+                "properties": {
+                  "vendor":         { "type": "string",           "minLength": 1 },
+                  "invoice_number": { "type": "string",           "minLength": 1 },
+                  "invoice_date":   { "type": "string",           "description": "ISO 8601 date string, e.g. 2024-03-15" },
+                  "due_date":       { "type": ["string", "null"], "description": "ISO 8601 date string or null" },
+                  "amount":         { "type": "number",           "minimum": 0 },
+                  "currency":       { "type": "string",           "minLength": 3, "maxLength": 3, "description": "ISO 4217 code, e.g. USD" },
+                  "line_items": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["description", "amount"],
+                      "properties": {
+                        "description": { "type": "string" },
+                        "quantity":    { "type": ["number", "null"] },
+                        "unit_price":  { "type": ["number", "null"] },
+                        "amount":      { "type": "number" }
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "schema_name": "invoice_extraction",
+              "temperature": 0,
+              "max_tokens":  1500
+            },
+            "result": "llm_extraction",
+            "start_to_close_timeout": "90s",
+            "retry": { "max_attempts": 3 },
+            "output_schema": {
+              "type": "object",
+              "required": ["parsed"],
+              "properties": {
+                "parsed": {
+                  "type": "object",
+                  "required": ["vendor", "invoice_number", "invoice_date", "amount", "currency"],
+                  "properties": {
+                    "vendor":         { "type": "string" },
+                    "invoice_number": { "type": "string" },
+                    "invoice_date":   { "type": "string" },
+                    "due_date":       { "type": ["string", "null"] },
+                    "amount":         { "type": "number" },
+                    "currency":       { "type": "string" },
+                    "line_items":     { "type": "array" }
+                  }
+                },
+                "content_filter_blocked": { "type": "boolean" }
+              }
+            }
+          }
+        },
+
+        {
+          "activity": {
+            "name": "data_validate",
+            "args": {
+              "data": "$var.llm_extraction.parsed",
+              "rules": {
+                "required_fields":   ["vendor", "invoice_number", "invoice_date", "amount", "currency"],
+                "amount_positive":   true,
+                "date_fields_iso":   ["invoice_date", "due_date"],
+                "amount_field":      "amount",
+                "currency_field":    "currency"
+              }
+            },
+            "result": "validated_invoice",
+            "start_to_close_timeout": "10s",
+            "retry": { "max_attempts": 1 },
+            "output_schema": {
+              "type": "object",
+              "required": ["valid", "normalized"],
+              "properties": {
+                "valid": { "type": "boolean" },
+                "errors": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "normalized": {
+                  "type": "object",
+                  "required": ["vendor", "invoice_number", "invoice_date", "amount", "currency"],
+                  "properties": {
+                    "vendor":         { "type": "string" },
+                    "invoice_number": { "type": "string" },
+                    "invoice_date":   { "type": "string" },
+                    "due_date":       { "type": ["string", "null"] },
+                    "amount":         { "type": "number" },
+                    "currency":       { "type": "string" },
+                    "line_items":     { "type": "array" }
+                  }
+                }
+              }
+            }
+          }
+        },
+
+        {
+          "set_variable": {
+            "name": "invoice_amount",
+            "value": "$var.validated_invoice.normalized.amount"
+          }
+        },
+
+        {
+          "set_variable": {
+            "name": "invoice_currency",
+            "value": "$var.validated_invoice.normalized.currency"
+          }
+        },
+
+        {
+          "condition": {
+            "if": "$var.invoice_amount > $var.approval_threshold_amount",
+            "then": {
+              "sequence": {
+                "steps": [
+
+                  {
+                    "activity": {
+                      "name": "create_entity",
+                      "args": {
+                        "entity_type": "invoice",
+                        "attributes": {
+                          "vendor":           "$var.validated_invoice.normalized.vendor",
+                          "invoice_number":   "$var.validated_invoice.normalized.invoice_number",
+                          "invoice_date":     "$var.validated_invoice.normalized.invoice_date",
+                          "due_date":         "$var.validated_invoice.normalized.due_date",
+                          "amount":           "$var.validated_invoice.normalized.amount",
+                          "currency":         "$var.validated_invoice.normalized.currency",
+                          "line_items":       "$var.validated_invoice.normalized.line_items",
+                          "status":           "pending_review",
+                          "submitted_by":     "$input.submitted_by",
+                          "source_document":  "$input.invoice_url",
+                          "page_count":       "$var.extracted_file.pages",
+                          "validation_errors": null
+                        },
+                        "created_by": "$input.submitted_by"
+                      },
+                      "result": "invoice_entity",
+                      "start_to_close_timeout": "15s",
+                      "retry": { "max_attempts": 3, "initial_interval": "1s" }
+                    }
+                  },
+
+                  {
+                    "set_variable": {
+                      "name": "invoice_entity_id",
+                      "value": "$var.invoice_entity.entity_id"
+                    }
+                  },
+
+                  {
+                    "wait_signal": {
+                      "signal":  "approval_decision",
+                      "result":  "approval_payload",
+                      "timeout": "72h"
+                    }
+                  },
+
+                  {
+                    "condition": {
+                      "if": "$var.approval_payload != null",
+                      "then": {
+                        "sequence": {
+                          "steps": [
+
+                            {
+                              "condition": {
+                                "if": "$var.approval_payload.decision == 'approve'",
+                                "then": {
+                                  "set_variable": {
+                                    "name": "invoice_status",
+                                    "value": "approved"
+                                  }
+                                },
+                                "else": {
+                                  "set_variable": {
+                                    "name": "invoice_status",
+                                    "value": "rejected"
+                                  }
+                                }
+                              }
+                            },
+
+                            {
+                              "activity": {
+                                "name": "update_entity_scd2",
+                                "args": {
+                                  "entity_id": "$var.invoice_entity_id",
+                                  "attributes": {
+                                    "status":        "$var.invoice_status",
+                                    "reviewer_id":   "$var.approval_payload.reviewer_id",
+                                    "reviewer_note": "$var.approval_payload.note",
+                                    "reviewed_at":   "$var.approval_payload.reviewed_at"
+                                  },
+                                  "updated_by": "$var.approval_payload.reviewer_id"
+                                },
+                                "result": "updated_entity",
+                                "start_to_close_timeout": "15s",
+                                "retry": { "max_attempts": 3, "initial_interval": "1s" }
+                              }
+                            }
+
+                          ]
+                        }
+                      },
+                      "else": {
+                        "set_variable": {
+                          "name": "invoice_status",
+                          "value": "timed_out"
+                        }
+                      }
+                    }
+                  }
+
+                ]
+              }
+            },
+            "else": {
+              "sequence": {
+                "steps": [
+
+                  {
+                    "set_variable": {
+                      "name": "invoice_status",
+                      "value": "approved"
+                    }
+                  },
+
+                  {
+                    "activity": {
+                      "name": "create_entity",
+                      "args": {
+                        "entity_type": "invoice",
+                        "attributes": {
+                          "vendor":           "$var.validated_invoice.normalized.vendor",
+                          "invoice_number":   "$var.validated_invoice.normalized.invoice_number",
+                          "invoice_date":     "$var.validated_invoice.normalized.invoice_date",
+                          "due_date":         "$var.validated_invoice.normalized.due_date",
+                          "amount":           "$var.validated_invoice.normalized.amount",
+                          "currency":         "$var.validated_invoice.normalized.currency",
+                          "line_items":       "$var.validated_invoice.normalized.line_items",
+                          "status":           "approved",
+                          "submitted_by":     "$input.submitted_by",
+                          "source_document":  "$input.invoice_url",
+                          "page_count":       "$var.extracted_file.pages",
+                          "validation_errors": null
+                        },
+                        "created_by": "$input.submitted_by"
+                      },
+                      "result": "invoice_entity",
+                      "start_to_close_timeout": "15s",
+                      "retry": { "max_attempts": 3, "initial_interval": "1s" }
+                    }
+                  },
+
+                  {
+                    "set_variable": {
+                      "name": "invoice_entity_id",
+                      "value": "$var.invoice_entity.entity_id"
+                    }
+                  }
+
+                ]
+              }
+            }
+          }
+        },
+
+        {
+          "activity": {
+            "name": "email_send",
+            "args": {
+              "to":        "$input.finance_team_email",
+              "subject":   "Invoice $var.validated_invoice.normalized.invoice_number processed — $var.invoice_status",
+              "body_html": "<p>Invoice <strong>$var.validated_invoice.normalized.invoice_number</strong> from <strong>$var.validated_invoice.normalized.vendor</strong> has been processed.</p><p>Amount: $var.invoice_currency $var.validated_invoice.normalized.amount</p><p>Status: <strong>$var.invoice_status</strong></p><p>Entity ID: $var.invoice_entity_id</p>",
+              "body_text": "Invoice $var.validated_invoice.normalized.invoice_number from $var.validated_invoice.normalized.vendor — Amount: $var.invoice_currency $var.validated_invoice.normalized.amount — Status: $var.invoice_status",
+              "_idempotency_key": "invoice-notify-$var.invoice_entity_id"
+            },
+            "result": "notification_result",
+            "start_to_close_timeout": "30s",
+            "retry": { "max_attempts": 3, "initial_interval": "5s" },
+            "output_schema": {
+              "type": "object",
+              "required": ["message_id", "provider", "delivered"],
+              "properties": {
+                "message_id": { "type": "string" },
+                "provider":   { "type": "string" },
+                "delivered":  { "type": "boolean" }
+              }
+            }
+          }
+        }
+
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Accepted or not-applicable Azure security findings. Add an entry here to suppress a known finding from creating new GitHub issues on the next audit run. Every entry must include a justification and a review_date (no more than 90 days out). The audit-findings-triage agent checks the finding ID against this file before filing an issue.",
+  "last_reviewed": "2026-06-22",
+  "findings": [
+    {
+      "id": "aks_api_server_authorized_ip_ranges",
+      "source": "azure-prowler",
+      "status": "accepted",
+      "justification": "AKS API server is currently accessible from internal VNet only via private cluster configuration. Public IP ranges are locked to the runner subnet. Authorised IP range enforcement via Kubernetes RBAC is in place. Review when public endpoint policy changes.",
+      "review_date": "2026-09-22"
+    },
+    {
+      "id": "defender_mfa_not_enforced",
+      "source": "azure-defender",
+      "status": "not_applicable",
+      "justification": "MFA enforcement is managed at the Entra ID tenant level via Conditional Access policies outside the scope of this subscription. Verified with identity team on 2026-06-22.",
+      "review_date": "2026-09-22"
+    },
+    {
+      "id": "defender_ddos_protection_plan",
+      "source": "azure-defender",
+      "status": "accepted",
+      "justification": "DDoS Protection Plan is a production-only requirement per architecture decision. Dev/staging environments intentionally omit this to reduce cost. Track separately under infrastructure hardening epic once production VNet is provisioned.",
+      "review_date": "2026-09-22"
+    }
+  ]
+}

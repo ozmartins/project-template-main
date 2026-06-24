@@ -1,0 +1,31 @@
+# Azure dev profile for charts/app
+# Intended namespace: 10x-stack-dev on AKS (aks-selfheal-staging)
+# Terraform manages ESO SecretStores + ExternalSecrets directly; disable chart-managed creation.
+
+externalSecrets:
+  enabled: false
+
+frontend:
+  service:
+    # Use port 80 externally so AKS NSG allows inbound traffic (default NSG only opens port 80)
+    port: 80
+    # Clear static AFD CIDRs; rely on azure-allowed-service-tags annotation instead
+    loadBalancerSourceRanges: []
+  # nginx container listens on 8080 (non-root)
+  containerPort: 8080
+  # Liveness uses tcpSocket to avoid identical probe pair with readinessProbe (kube-score CRITICAL).
+  livenessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3

@@ -1,0 +1,6 @@
+dependencies:
+- name: temporal
+  repository: https://go.temporal.io/helm-charts
+  version: 0.46.0
+digest: sha256:2dbd44259c87a6417edfea17bc5aa868167d5ce2f6dc819bc33582c416f7b1d9
+generated: "2026-06-21T12:14:49.845021-06:00"

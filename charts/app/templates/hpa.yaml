@@ -1,0 +1,51 @@
+{{- if .Values.hpa.enabled }}
+{{- if gt (int .Values.hpa.frontend.minReplicas) (int .Values.hpa.frontend.maxReplicas) }}
+{{- fail "hpa.frontend.minReplicas must be less than or equal to hpa.frontend.maxReplicas" }}
+{{- end }}
+{{- if gt (int .Values.hpa.temporalWorker.minReplicas) (int .Values.hpa.temporalWorker.maxReplicas) }}
+{{- fail "hpa.temporalWorker.minReplicas must be less than or equal to hpa.temporalWorker.maxReplicas" }}
+{{- end }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "app.frontend.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "app.frontend.fullname" . }}
+  minReplicas: {{ .Values.hpa.frontend.minReplicas }}
+  maxReplicas: {{ .Values.hpa.frontend.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.frontend.targetCPUUtilization }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "app.temporalWorker.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "app.temporalWorker.fullname" . }}
+  minReplicas: {{ .Values.hpa.temporalWorker.minReplicas }}
+  maxReplicas: {{ .Values.hpa.temporalWorker.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.temporalWorker.targetCPUUtilization }}
+{{- end }}

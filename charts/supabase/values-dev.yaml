@@ -1,0 +1,230 @@
+# Supabase Kubernetes Helm chart values — dev profile
+# Namespace: 10x-stack-supabase
+# Chart:     supabase-community/supabase-kubernetes
+#
+# Deploy with:
+#   helm repo add supabase https://supabase-community.github.io/supabase-kubernetes
+#   helm upgrade --install supabase supabase/supabase-kubernetes \
+#     --namespace 10x-stack-supabase \
+#     -f charts/supabase/values-dev.yaml \
+#     --wait --timeout 15m
+#
+# The release name MUST be "supabase" so the Kong service resolves as
+# supabase-supabase-kong.10x-stack-supabase.svc.cluster.local (referenced by
+# charts/app/values-dev.yaml for the temporal worker and ops-api).
+#
+# Prerequisites (apply before helm install):
+#   1. ESO ExternalSecrets (OpenBao) in the 10x-stack-supabase namespace — see README.md
+#   2. kubectl apply -f deploy/k8s/rbac-dev-db-bootstrap.yaml
+#      (with SUPABASE_NAMESPACE=10x-stack-supabase substituted)
+#
+# See docs/adrs/0016-self-hosted-supabase-in-cluster.md for the architectural decision.
+
+# ---------------------------------------------------------------------------
+# Secrets — all credentials must be pre-created by ESO/OpenBao before install.
+# The names below must match the ExternalSecret resources in the namespace.
+# ---------------------------------------------------------------------------
+secret:
+  jwt:
+    # OpenBao path: openbao/10x-stack-supabase/supabase-jwt
+    existingSecret: "supabase-jwt"
+    existingSecretKeys:
+      anonKey: "anon-key"
+      serviceKey: "service-key"
+      secret: "secret"
+
+  smtp:
+    # SMTP is optional in dev; comment in and create the secret when email auth is needed.
+    # existingSecret: "supabase-smtp"
+    # existingSecretKeys:
+    #   username: "username"
+    #   password: "password"
+    username: ""
+    password: ""
+    host: ""
+    port: "587"
+    adminEmail: "admin@example.com"
+    senderName: "Supabase Dev"
+
+  dashboard:
+    # Studio is disabled below; this secret is still consumed by the chart's
+    # secret-creation job even when Studio is off. Pre-create with any values.
+    existingSecret: "supabase-dashboard"
+    existingSecretKeys:
+      username: "username"
+      password: "password"
+
+  db:
+    # OpenBao path: openbao/10x-stack-supabase/supabase-db
+    # The secret's "username" value MUST be "supabase_admin" (chart default superuser).
+    # If a different username was used when initializing Postgres, override db.username
+    # in this file to match and update the secret accordingly.
+    existingSecret: "supabase-db"
+    existingSecretKeys:
+      username: "username"
+      password: "password"
+      database: "database"
+
+  analytics:
+    # OpenBao path: openbao/10x-stack-supabase/supabase-analytics
+    existingSecret: "supabase-analytics"
+    existingSecretKeys:
+      apiKey: "api-key"
+
+# ---------------------------------------------------------------------------
+# Database (Postgres StatefulSet)
+# ---------------------------------------------------------------------------
+db:
+  enabled: true
+  image:
+    tag: "15.1.0.147"
+  persistence:
+    enabled: true
+    # Uses the cluster default StorageClass (Azure Disk on AKS)
+    storageClass: ""
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Studio — disabled for security. No authentication guards the Studio UI;
+# enabling it in a shared namespace is a security violation (ADR-0047).
+# Use `supabase start` locally or a port-forward (admin-only) for schema work.
+# ---------------------------------------------------------------------------
+studio:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Auth (GoTrue)
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+  environment:
+    # TODO (required before install): replace <FRONTEND_URL> with the public
+    # frontend hostname (LoadBalancer IP or HTTPS domain). This is the URL the
+    # browser uses for auth redirects. If left as-is, GoTrue will reject all
+    # auth callbacks and login will fail completely — do not deploy with this
+    # placeholder. Run `helm upgrade` again after capturing the frontend IP.
+    GOTRUE_SITE_URL: "https://<FRONTEND_URL>"
+    GOTRUE_URI_ALLOW_LIST: "https://<FRONTEND_URL>"
+    # Signup is enabled in dev so testers can create accounts.
+    # Set to "true" to restrict access to admin-provisioned users only.
+    GOTRUE_DISABLE_SIGNUP: "false"
+    # MFA (TOTP) — required to reach aal2 per the require_aal2 migration and ADR-0034.
+    GOTRUE_MFA_TOTP_ENROLLMENT_ENABLED: "true"
+    GOTRUE_MFA_TOTP_VERIFICATION_ENABLED: "true"
+    # Require reauthentication for sensitive changes (password update).
+    GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION: "true"
+    GOTRUE_JWT_EXPIRY: "3600"
+    GOTRUE_MAILER_AUTOCONFIRM: "true"
+
+# ---------------------------------------------------------------------------
+# REST (PostgREST)
+# ---------------------------------------------------------------------------
+rest:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Realtime
+# ---------------------------------------------------------------------------
+realtime:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Meta (Postgres schema introspection for Studio / migrations)
+# ---------------------------------------------------------------------------
+meta:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+storage:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Edge Functions
+# ---------------------------------------------------------------------------
+functions:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Analytics (Logflare)
+# ---------------------------------------------------------------------------
+analytics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Kong API Gateway
+# ---------------------------------------------------------------------------
+kong:
+  enabled: true
+  service:
+    # ClusterIP: Kong is not exposed to the internet directly (ADR-0047).
+    # In-cluster consumers (temporal worker, ops-api) reach Kong at:
+    #   http://supabase-supabase-kong.10x-stack-supabase.svc.cluster.local
+    # Browser access for dev testing: use a port-forward (HTTP, no TLS):
+    #   kubectl port-forward -n 10x-stack-supabase svc/supabase-supabase-kong 8000:8000
+    #   then set supabaseUrl to http://localhost:8000 in charts/app/values-dev.yaml
+    #   If local port 8000 is taken, use a different local port (e.g. 8001:8000) and
+    #   adjust the supabaseUrl accordingly.
+    # For a persistent public endpoint, route through the cluster ingress controller
+    # (Istio Gateway or nginx Ingress) and set supabaseUrl to that ingress hostname.
+    # Never expose Kong as LoadBalancer — it proxies the full Supabase API and must
+    # only be reachable via a controlled ingress path (ADR-0047).
+    type: ClusterIP
+    port: 8000

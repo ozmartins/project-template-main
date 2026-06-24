@@ -1,0 +1,99 @@
+# Dev DB bootstrap identities/RBAC for in-cluster migration+seed job.
+# Apply with: kubectl apply -f deploy/k8s/rbac-dev-db-bootstrap.yaml
+#
+# Scope:
+# - Namespace: 10x-stack-supabase only
+# - GitHub bootstrap identity (`gha-db-bootstrap`) may only manage bootstrap Job/ConfigMap
+#   lifecycle and read pod logs for that Job.
+# - In-cluster bootstrap runner identity (`db-bootstrap`) may only resolve the DB pod,
+#   read bootstrap ConfigMaps, and exec into it (pods/exec) for SQL apply/assertion.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gha-db-bootstrap
+  namespace: 10x-stack-supabase
+  labels:
+    app.kubernetes.io/part-of: <APP_NAME>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gha-db-bootstrap
+  namespace: 10x-stack-supabase
+  labels:
+    app.kubernetes.io/part-of: <APP_NAME>
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gha-db-bootstrap
+  namespace: 10x-stack-supabase
+  labels:
+    app.kubernetes.io/part-of: <APP_NAME>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gha-db-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: gha-db-bootstrap
+    namespace: 10x-stack-supabase
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: db-bootstrap
+  namespace: 10x-stack-supabase
+  labels:
+    app.kubernetes.io/part-of: <APP_NAME>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: db-bootstrap
+  namespace: 10x-stack-supabase
+  labels:
+    app.kubernetes.io/part-of: <APP_NAME>
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: db-bootstrap
+  namespace: 10x-stack-supabase
+  labels:
+    app.kubernetes.io/part-of: <APP_NAME>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: db-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: db-bootstrap
+    namespace: 10x-stack-supabase

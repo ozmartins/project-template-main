@@ -1,0 +1,186 @@
+suite: backup cronjob tests
+templates:
+  - templates/backup-cronjob.yaml
+tests:
+  - it: should not render when backup is disabled
+    set:
+      backup.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render Secret and CronJob when backup is enabled
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc123==;EndpointSuffix=core.windows.net"
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: should render a Secret with the storage connection string
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc123==;EndpointSuffix=core.windows.net"
+    asserts:
+      - isKind:
+          of: Secret
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: postgres-backup-secret
+        documentIndex: 0
+
+  - it: should render a CronJob
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc123==;EndpointSuffix=core.windows.net"
+    asserts:
+      - isKind:
+          of: CronJob
+        documentIndex: 1
+
+  - it: should use the configured schedule
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+      backup.schedule: "0 3 * * *"
+    asserts:
+      - equal:
+          path: spec.schedule
+          value: "0 3 * * *"
+        documentIndex: 1
+
+  - it: should use Forbid concurrency policy
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+    asserts:
+      - equal:
+          path: spec.concurrencyPolicy
+          value: Forbid
+        documentIndex: 1
+
+  - it: should set OnFailure restart policy
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.restartPolicy
+          value: OnFailure
+        documentIndex: 1
+
+  - it: should pass PGDATABASE env to init container
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+      database: mydb
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.initContainers[0].env
+          content:
+            name: PGDATABASE
+            value: mydb
+        documentIndex: 1
+
+  - it: should pass PGUSER env to init container
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+      user: myuser
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.initContainers[0].env
+          content:
+            name: PGUSER
+            value: myuser
+        documentIndex: 1
+
+  - it: should read PGPASSWORD from postgres-secret
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.initContainers[0].env
+          content:
+            name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-secret
+                key: db-password
+        documentIndex: 1
+
+  - it: should read AZURE_STORAGE_CONNECTION_STRING from backup secret
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: AZURE_STORAGE_CONNECTION_STRING
+            valueFrom:
+              secretKeyRef:
+                name: postgres-backup-secret
+                key: storage-connection-string
+        documentIndex: 1
+
+  - it: should pass BACKUP_CONTAINER env to upload container
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+      backup.storageContainer: "my-backups"
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: BACKUP_CONTAINER
+            value: my-backups
+        documentIndex: 1
+
+  - it: should pass RETENTION_DAYS env to upload container
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+      backup.retentionDays: "14"
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: RETENTION_DAYS
+            value: "14"
+        documentIndex: 1
+
+  - it: should use the configured az-cli image
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+      backup.image: "mcr.microsoft.com/azure-cli:2.61.0"
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].image
+          value: "mcr.microsoft.com/azure-cli:2.61.0"
+        documentIndex: 1
+
+  - it: should mount backup-tmp emptyDir volume
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.volumes
+          content:
+            name: backup-tmp
+            emptyDir: {}
+        documentIndex: 1
+
+  - it: should disable Istio sidecar injection
+    set:
+      backup.enabled: true
+      backup.storageConnectionString: "test"
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.metadata.annotations["sidecar.istio.io/inject"]
+          value: "false"
+        documentIndex: 1
