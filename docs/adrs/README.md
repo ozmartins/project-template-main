@@ -113,6 +113,7 @@ Architectural decisions (data model, orchestration engine, deployment topology, 
 | [0100](./0100-pipeline-hourly-contents-write.md) | Isolate `contents: write` to factory-architect publish job in pipeline-hourly | Accepted |
 | [0101](./0101-vision-governs-core-agent-guidance.md) | `docs/vision.md` is the canonical governing reference for core agent guidance | Accepted |
 | [0126](./0126-e2e-skip-budget-relaxed-when-auth-absent.md) | E2E skip budget relaxed to 100% when auth credentials are absent | Accepted |
+| [0127](./0127-email-order-import-workflow-and-model-hosting.md) | Email Order Import — workflow shape & model hosting (Azure gpt-5.4) | Proposed |
 | [0120](./0120-e2e-dev-mfa-secret-export.md) | Export E2E_MFA_SECRET in e2e-dev workflow jobs for TOTP derivation | Accepted |
 
 | [0070](./0070-build-images-ecr-oidc-authentication.md) | Build images workflow uses GitHub OIDC for ECR authentication | Accepted |
