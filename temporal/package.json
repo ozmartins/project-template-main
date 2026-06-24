@@ -18,7 +18,7 @@
   "dependencies": {
     "@azure/identity": "^4.5.0",
     "@earendil-works/pi-ai": "^0.79.10",
-    "@hono/node-server": "^2.0.5",
+    "@hono/node-server": "^2.0.6",
     "@temporalio/activity": "^1.18.1",
     "@temporalio/client": "^1.18.1",
     "@temporalio/worker": "^1.18.1",
