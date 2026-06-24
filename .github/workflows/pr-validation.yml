@@ -510,25 +510,25 @@ jobs:
       # absent if a runner died before writing it; the record script degrades to an
       # "error" record rather than failing.
       - name: Download unit results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: unit-results
           path: artifacts/unit
         continue-on-error: true
       - name: Download temporal results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: temporal-results
           path: artifacts/temporal
         continue-on-error: true
       - name: Download helm results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: helm-results
           path: artifacts/helm
         continue-on-error: true
       - name: Download seed results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: seed-results
           path: artifacts/seed
