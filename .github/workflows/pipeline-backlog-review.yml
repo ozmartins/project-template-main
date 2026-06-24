@@ -1,0 +1,96 @@
+name: Pipeline - Backlog Review
+
+# Daily per-issue backlog sweep — ADR-0025 cadence extension.
+#
+# Iterates every open issue oldest-stale-first and, for each one, fires a
+# fresh `backlog-reviewer` Copilot SDK agent session to decide:
+#   - Close as completed (work was done by a merged PR or ADR)
+#   - Close as not planned (superseded, direction changed, duplicate)
+#   - Add a staleness comment (still valid but description has drifted)
+#   - No action (issue is still accurate and needed)
+#
+# Design notes:
+#   • One fresh SDK session per issue — context never bleeds between issues.
+#   • Oldest-updated-at first — most stale issues always reviewed first.
+#     If the budget runs out, the least-stale issues defer to tomorrow's run.
+#   • Issues updated within 2 hours are skipped (actively changing).
+#   • 5-hour script budget / 8-minute per-issue cap ≈ 37 issues/run.
+#     A backlog of 300 issues clears in ~8 days of daily runs.
+#   • Job timeout-minutes: 360 (GitHub hosted max). Script exits before that.
+#
+# Required secrets: COPILOT_TOKEN, PROJECT_MANAGER_PAT
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # daily at 02:00 UTC (off-peak, after nightly audits)
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pipeline-backlog-review
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  backlog_review:
+    runs-on: ubuntu-latest
+    # GitHub hosted runner maximum. The issue pipeline script exits at 5h (300m)
+    # so this cap is a safety net only.
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Backlog review — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run issue backlog pipeline
+        id: backlog_pipeline
+        continue-on-error: true
+        # No per-step timeout: the script manages its own 5h wall-clock budget
+        # and exits cleanly. The job-level 360m cap catches runaway hangs only.
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          # Override defaults via env if you need to tune:
+          # ISSUE_REVIEWER_TIMEOUT_MIN: "8"   # per-issue cap (default: 8)
+          # ISSUE_PIPELINE_BUDGET_MIN: "300"  # total wall-clock budget (default: 300)
+          # ISSUE_SETTLE_MINUTES: "120"       # skip issues updated within N min (default: 120)
+        run: npx tsx src/run-issue-pipeline.ts
+
+      - name: Summarise pipeline outcome
+        if: always()
+        env:
+          OUTCOME: ${{ steps.backlog_pipeline.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| backlog-review pipeline | $STATUS |" >> "$GITHUB_STEP_SUMMARY"

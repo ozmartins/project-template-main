@@ -1,0 +1,229 @@
+name: Audit - CIS Kubernetes Benchmark
+
+# Nightly CIS Kubernetes benchmark using kube-bench (Apache 2.0).
+# Runs on the self-hosted cluster runner so it can reach the live cluster.
+# Findings are written to JSON, then the audit-findings-triage Copilot agent
+# reads the output and files/updates GitHub issues for all FAIL results,
+# deduplicating against existing open issues before creating new ones.
+#
+# Manual trigger: workflow_dispatch with optional severity_threshold override.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC nightly (offset from prowler at 04:00)
+  workflow_dispatch:
+    inputs:
+      severity_threshold:
+        description: 'Minimum severity to file issues (FAIL or WARN)'
+        required: false
+        default: 'FAIL'
+        type: choice
+        options: [FAIL, WARN]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: audit-cis-kubernetes
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  kube-bench:
+    name: CIS Kubernetes Benchmark
+    runs-on: [self-hosted, linux, x64, factory-cluster-guardian]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Check cluster connectivity
+        run: |
+          if ! kubectl cluster-info >/dev/null 2>&1; then
+            echo "::warning::Cluster not reachable — skipping kube-bench run"
+            echo "CLUSTER_REACHABLE=false" >> "$GITHUB_ENV"
+          else
+            echo "CLUSTER_REACHABLE=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run kube-bench
+        if: env.CLUSTER_REACHABLE == 'true'
+        run: |
+          # Run kube-bench as a Kubernetes Job and collect the JSON output.
+          # Using the official aquasecurity/kube-bench image (Apache 2.0).
+          # We target the node benchmark (section 4) since master control plane
+          # sections (1-3) are managed by the cloud provider (AKS) and not accessible.
+          kubectl apply -f - <<'EOF'
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: kube-bench-nightly
+            namespace: default
+          spec:
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                hostPID: true
+                nodeSelector:
+                  kubernetes.io/os: linux
+                tolerations:
+                  - key: node-role.kubernetes.io/control-plane
+                    effect: NoSchedule
+                containers:
+                  - name: kube-bench
+                    image: aquasec/kube-bench:latest
+                    command: ["kube-bench", "--benchmark", "aks-1.0", "--json"]
+                    volumeMounts:
+                      - name: var-lib-kubelet
+                        mountPath: /var/lib/kubelet
+                        readOnly: true
+                      - name: etc-systemd
+                        mountPath: /etc/systemd
+                        readOnly: true
+                      - name: etc-kubernetes
+                        mountPath: /etc/kubernetes
+                        readOnly: true
+                volumes:
+                  - name: var-lib-kubelet
+                    hostPath:
+                      path: /var/lib/kubelet
+                  - name: etc-systemd
+                    hostPath:
+                      path: /etc/systemd
+                  - name: etc-kubernetes
+                    hostPath:
+                      path: /etc/kubernetes
+                restartPolicy: Never
+          EOF
+
+          # Wait for job completion (max 10 minutes)
+          kubectl wait --for=condition=complete job/kube-bench-nightly \
+            --timeout=600s --namespace default
+
+          # Collect JSON output
+          mkdir -p /tmp/audit
+          kubectl logs job/kube-bench-nightly --namespace default > /tmp/audit/kube-bench.json
+
+          # Clean up
+          kubectl delete job kube-bench-nightly --namespace default --ignore-not-found
+
+          echo "kube-bench output:"
+          jq '.Controls | length' /tmp/audit/kube-bench.json || cat /tmp/audit/kube-bench.json | head -20
+
+      - name: Upload kube-bench results
+        if: env.CLUSTER_REACHABLE == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: kube-bench-results-${{ github.run_id }}
+          path: /tmp/audit/kube-bench.json
+          retention-days: 30
+
+      - name: Summarise raw findings
+        if: env.CLUSTER_REACHABLE == 'true'
+        run: |
+          {
+            echo "## kube-bench CIS Kubernetes Benchmark — $(date -u '+%Y-%m-%d')"
+            echo ""
+            echo "| Status | Count |"
+            echo "|--------|-------|"
+            jq -r '
+              .Controls[].tests.results[]
+              | .status
+            ' /tmp/audit/kube-bench.json | sort | uniq -c | \
+              awk '{print "| " $2 " | " $1 " |"}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Triage agent — files/updates GitHub issues for FAIL results ──────────
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        if: env.CLUSTER_REACHABLE == 'true'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        if: env.CLUSTER_REACHABLE == 'true'
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Triage findings → GitHub issues
+        if: env.CLUSTER_REACHABLE == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          AUDIT_SOURCE: kube-bench
+          AUDIT_JSON_PATH: /tmp/audit/kube-bench.json
+          AUDIT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUDIT_SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'FAIL' }}
+        run: npx tsx src/run-agent.ts --agent audit-findings-triage
+
+      - name: Cluster not reachable — skip
+        if: env.CLUSTER_REACHABLE == 'false'
+        run: |
+          echo "## ⚠️ Cluster not reachable" >> "$GITHUB_STEP_SUMMARY"
+          echo "kube-bench skipped — self-hosted runner could not connect to the Kubernetes cluster." >> "$GITHUB_STEP_SUMMARY"
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [kube-bench]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: audit-cis-kubernetes
+          WORKFLOW_CATEGORY: security
+          WORKFLOW_ENV:
+          WORKFLOW_CLOUD:
+          WORKFLOW_METRICS: '{"finding_count": 0}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

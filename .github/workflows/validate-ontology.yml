@@ -1,0 +1,87 @@
+name: Validate - Ontology
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**.sql'
+      - 'supabase/seed.sql'
+      - 'temporal/scripts/lint-ontology.ts'
+      - '.github/workflows/validate-ontology.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**.sql'
+      - 'supabase/seed.sql'
+      - 'temporal/scripts/lint-ontology.ts'
+
+jobs:
+  ontology-lint:
+    name: Ontology lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+        working-directory: temporal
+      - name: Run ontology lint
+        run: npx ts-node scripts/lint-ontology.ts
+        working-directory: temporal
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [ontology-lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: validate-ontology
+          WORKFLOW_CATEGORY: quality
+          WORKFLOW_ENV:
+          WORKFLOW_CLOUD:
+          WORKFLOW_METRICS: '{}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

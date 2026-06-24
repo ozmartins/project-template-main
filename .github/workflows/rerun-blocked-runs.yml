@@ -1,0 +1,66 @@
+name: Ops - Rerun Blocked Run (Dispatch)
+
+# Maintainer-invoked backstop for a single same-repo PR whose workflow runs
+# have landed in conclusion=action_required.
+#
+# Supply the head commit SHA of the PR to clear. The workflow finds every
+# action_required run for that SHA and reruns each one using the job-scoped
+# GITHUB_TOKEN (actions:write permission). This keeps the PAT out of the
+# workflow runtime identity.
+#
+# Root-cause fix: set the repo/org Actions approval policy so same-repo bot PRs
+# never require approval — see README.md "Actions approval policy" under
+# "Repository settings".
+#
+# ADR: docs/adrs/0108-auto-rerun-action-required-same-repo-runs.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: 'Head commit SHA of the PR whose action_required runs should be rerun'
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  rerun:
+    name: Rerun action_required runs for head SHA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find and rerun blocked runs for head SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          HEAD_SHA="${INPUT_HEAD_SHA}"
+          echo "Scanning for action_required runs for SHA: $HEAD_SHA"
+
+          BLOCKED_IDS=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --commit "$HEAD_SHA" \
+            --json databaseId,conclusion \
+            --jq '[.[] | select(.conclusion == "action_required") | .databaseId] | .[]' \
+            2>/dev/null || true)
+
+          if [ -z "$BLOCKED_IDS" ]; then
+            echo "No action_required runs found for $HEAD_SHA — nothing to do."
+            exit 0
+          fi
+
+          COUNT=0
+          for RUN_ID in $BLOCKED_IDS; do
+            echo "Rerunning run $RUN_ID …"
+            gh run rerun "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              && COUNT=$((COUNT + 1)) \
+              || echo "  Warning: rerun request for $RUN_ID failed (may already be rerunning)"
+          done
+
+          echo "Requested reruns for $COUNT blocked run(s)."

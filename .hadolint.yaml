@@ -1,0 +1,4 @@
+ignore:
+  # Add rule suppressions here with justification comments
+  # Example:
+  # - DL3008  # reason: ...

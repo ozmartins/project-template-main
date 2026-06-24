@@ -1,0 +1,113 @@
+name: Monitor - Deploy
+
+# Event-driven deploy-failure sentinel.
+#
+# The general `actions-monitor` polls `gh run list --limit 40`, and the deploy/E2E
+# workflows are LOW-FREQUENCY + `workflow_run`-triggered, so a busy Actions queue
+# (pipeline-fast, PR validation, build images, …) crowds them out of that window —
+# a deploy can fail repeatedly with NO incident raised ("silent deployment failure").
+#
+# This workflow fixes that structurally: it fires on the COMPLETION of the deploy /
+# dev-E2E workflows and, only when they FAILED, runs a two-phase incident emitter:
+#
+#   Phase 1 — pre-dedupe (upsert-deploy-incident.ts):
+#     Computes a STABLE family fingerprint for the failing workflow, lists ALL open
+#     auto:deploy issues (up to 500, using the strongly-consistent LIST API), and
+#     finds any existing incident by fingerprint or title-keyword fallback.
+#     • If found: adds a "still failing" comment (embedding the stable fingerprint
+#       so future invocations match on fingerprint rather than title) and sets
+#       `steps.precheck.outputs.issue_number` to the existing issue number.
+#     • If not found: outputs an empty `issue_number` and continues to Phase 2.
+#
+#   Phase 2 — deploy-sentinel agent (only when Phase 1 found no existing incident):
+#     The agent reads the failed run's log, root-causes the failure, and creates
+#     a new priority:critical incident. This phase is skipped for repeat failures
+#     so the agent cannot produce a duplicate.
+#
+# NOTE: `workflow_run` triggers only fire for the version of this file on the default
+# branch — it takes effect once merged to {{ default_branch }} (same as deploy-dev.yml).
+
+on:
+  workflow_run:
+    workflows: ["Deploy - Dev", "Test - E2E Dev"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "A failed Deploy Dev / E2E run id to investigate manually"
+        required: false
+
+concurrency:
+  group: monitor-deploy-${{ github.event.workflow_run.id || github.event.inputs.run_id || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sentinel:
+    # Only act on FAILED deploy/E2E runs (or a manual dispatch).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      # Phase 1: stable-fingerprint upsert check.
+      # Uses the LIST API (strongly consistent; no index lag) with a high limit
+      # so existing incidents are never missed due to pagination cutoff.
+      # Outputs `issue_number=<N>` when an existing incident was updated, or
+      # `issue_number=` (empty) when no existing incident exists.
+      # Skipped for workflow_dispatch: manual investigations always go to Phase 2
+      # so an operator can force a fresh root-cause run on an in-flight incident.
+      - name: Pre-deduplicate deploy incident
+        id: precheck
+        if: github.event_name != 'workflow_dispatch'
+        working-directory: .github/tools/shared
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FAILED_WORKFLOW: ${{ github.event.workflow_run.name }}
+          FAILED_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          output="$(npx tsx src/upsert-deploy-incident.ts)"
+          echo "$output"
+          echo "$output" >> "$GITHUB_OUTPUT"
+
+      # Phase 2: full agent investigation — only for NEW (first-time) incidents.
+      # The two conditions are intentionally independent:
+      #   - workflow_dispatch: Phase 1 was skipped, so always run the agent.
+      #   - issue_number == '': Phase 1 ran but found no existing incident.
+      # Both mean "no existing incident was updated, create/investigate one."
+      - name: Run Deploy Sentinel agent
+        if: github.event_name == 'workflow_dispatch' || steps.precheck.outputs.issue_number == ''
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          FAILED_RUN_ID: ${{ github.event.workflow_run.id || github.event.inputs.run_id }}
+          FAILED_WORKFLOW: ${{ github.event.workflow_run.name || 'manual dispatch' }}
+          FAILED_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: npx tsx src/run-agent.ts --agent deploy-sentinel
+

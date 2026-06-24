@@ -1,0 +1,612 @@
+name: CICD - Build Images
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+# Workflow-level default: read-only.  Jobs that need elevated permissions
+# declare them explicitly at the job level.  The trusted-path split means
+# build-images-pr (PR-controlled code) never holds OIDC tokens or registry
+# credentials; those are scoped exclusively to push-only jobs.
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # PR path: build locally and scan.  No OIDC, no registry credentials.
+  # Safe to execute against untrusted PR code.
+  # -------------------------------------------------------------------------
+  build-images-pr:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+          - image_name: temporal-worker
+            context: ./temporal
+            dockerfile: ./temporal/Dockerfile
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
+
+      - name: Compute build args
+        id: build-args
+        shell: bash
+        run: |
+          if [ "${{ matrix.image_name }}" = "frontend" ]; then
+            {
+              echo 'value<<EOF'
+              echo "VITE_COMMIT_SHA=${{ github.sha }}"
+              echo "VITE_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo 'value=' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (local — scan tag, no push)
+        id: build-local
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          build-args: ${{ steps.build-args.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # ---- Vulnerability and configuration scans ----
+
+      # Trivy vuln scan: informational only (exit-code 0, SARIF upload).
+      # Trivy sources Debian CVE severity from DSA, which rates some packages HIGH
+      # where NVD rates them MEDIUM.  ignore-unfixed:true does not suppress these
+      # because DSA records a fix in Debian unstable.  Grype (NVD/GHSA) is the
+      # primary blocking CVE gate; Trivy vuln findings are visible in the Security tab.
+      - name: Scan — Trivy vuln (informational SARIF)
+        id: trivy-vuln
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: os
+          format: sarif
+          output: trivy-${{ matrix.image_name }}-vuln.sarif
+
+      - name: Upload Trivy vuln SARIF to Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b0c4fd77f6c559021d78430ec4d0d169ae74a4eb  # v3
+        with:
+          sarif_file: trivy-${{ matrix.image_name }}-vuln.sarif
+          category: container-${{ matrix.image_name }}-vuln
+
+      - name: Scan — Trivy misconfig + secret
+        id: trivy-ms
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          scanners: misconfig,secret
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          format: sarif
+          output: trivy-ms-${{ matrix.image_name }}.sarif
+
+      - name: Upload Trivy misconfig+secret SARIF to Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b0c4fd77f6c559021d78430ec4d0d169ae74a4eb  # v3
+        with:
+          sarif_file: trivy-ms-${{ matrix.image_name }}.sarif
+          category: container-ms-${{ matrix.image_name }}
+
+      - name: Scan — Grype (CVE, second opinion)
+        id: grype
+        continue-on-error: true
+        env:
+          GRYPE_DB_VALIDATE_AGE: 'false'
+          GRYPE_CONFIG: .grype.yaml
+        uses: anchore/scan-action@d43cc1dfea6a99ed123bf8f3133f1797c9b44492  # v4.1.0
+        with:
+          image: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          severity-cutoff: high
+          fail-build: true
+          only-fixed: true
+          output-format: table
+
+      - name: Audit — Dockle (CIS Benchmark)
+        id: dockle
+        continue-on-error: true
+        run: |
+          # .dockleignore is mounted at /.dockleignore; Dockle auto-reads it
+          # from its working directory (/) without requiring --ignore-file.
+          if [[ ! -f "${{ github.workspace }}/.dockleignore" ]]; then
+            echo "::error::.dockleignore file not found at repository root; add one Dockle check ID per line (comments allowed with #)."
+            exit 1
+          fi
+          DOCKLE_IGNORES="$(grep -Ev '^\s*(#|$)' "${{ github.workspace }}/.dockleignore" | paste -sd, -)"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e DOCKLE_IGNORES="${DOCKLE_IGNORES}" \
+            goodwithtech/dockle:v0.4.15 \
+            --exit-code 1 \
+            --exit-level warn \
+            "${{ matrix.image_name }}:scan-${{ github.sha }}"
+
+      - name: Enforce scan gate
+        if: always()
+        shell: bash
+        run: |
+          # Gate logic:
+          #   trivy-ms  — blocking: misconfig + secret findings have no vendor-severity
+          #               variance; any HIGH/CRITICAL finding must be remediated.
+          #   grype     — blocking: primary CVE gate using NVD/GHSA severity (only-fixed).
+          #   dockle    — blocking: CIS Benchmark violations.
+          #   trivy-vuln — informational only; findings visible via SARIF in Security tab.
+          FAILED=0
+          if [[ "${{ steps.trivy-vuln.outcome }}" == "failure" ]]; then
+            echo "::warning::Trivy vuln scan found HIGH/CRITICAL CVEs — review SARIF in Security tab."
+          fi
+          [[ "${{ steps.trivy-ms.outcome }}" == "failure" ]] && FAILED=1 && echo "::error::Trivy scan found misconfigurations or secrets."
+          [[ "${{ steps.grype.outcome }}" == "failure" ]] && FAILED=1 && echo "::error::Grype scan found HIGH/CRITICAL CVEs."
+          [[ "${{ steps.dockle.outcome }}" == "failure" ]] && FAILED=1 && echo "::error::Dockle audit found CIS Benchmark violations."
+          if [[ "$FAILED" -eq 1 ]]; then
+            echo "::error::One or more image scans failed — see scan step output above."
+            exit 1
+          fi
+
+  # -------------------------------------------------------------------------
+  # Push path: scan then push.  Runs only on trusted push events.
+  # id-token: write and registry credentials are scoped to this job only.
+  # sign-images and provenance jobs downstream depend on the build metadata
+  # artifact uploaded here.
+  # -------------------------------------------------------------------------
+  build-images:
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+          - image_name: temporal-worker
+            context: ./temporal
+            dockerfile: ./temporal/Dockerfile
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
+
+      - name: Evaluate push gate
+        id: push-gate
+        shell: bash
+        env:
+          IS_TRACKED_PUSH: 'true'
+          REGISTRY: ${{ vars.ACR_LOGIN_SERVER }}
+          REGISTRY_USERNAME: ${{ secrets.ACR_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: ./.github/scripts/build-images-metadata.sh push-gate
+
+      - name: Push skipped (credentials/vars missing)
+        if: steps.push-gate.outputs.enabled != 'true'
+        run: ./.github/scripts/build-images-metadata.sh skip-message
+
+      - name: Evaluate ECR push gate
+        id: ecr-push-gate
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ vars.AWS_ECR_REGISTRY }}
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: ./.github/scripts/build-images-metadata.sh ecr-push-gate
+
+      - name: Log in to ACR
+        if: ${{ steps.push-gate.outputs.enabled == 'true' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ${{ vars.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Configure AWS credentials for ECR
+        if: ${{ steps.push-gate.outputs.enabled == 'true' && steps.ecr-push-gate.outputs.enabled == 'true' }}
+        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c  # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          role-session-name: build-images-ecr
+          aws-region: ${{ steps.ecr-push-gate.outputs.region }}
+
+      - name: Log in to ECR
+        if: ${{ steps.push-gate.outputs.enabled == 'true' && steps.ecr-push-gate.outputs.enabled == 'true' }}
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64  # v2
+
+      - name: Compute image tags
+        id: image-tags
+        shell: bash
+        env:
+          REGISTRY: ${{ vars.ACR_LOGIN_SERVER }}
+          ECR_REGISTRY: ${{ steps.ecr-push-gate.outputs.registry }}
+          IMAGE_NAME: ${{ matrix.image_name }}
+          GITHUB_REF: ${{ github.ref }}
+        run: ./.github/scripts/build-images-metadata.sh image-tags
+
+      - name: Compute build args
+        id: build-args
+        shell: bash
+        run: |
+          if [ "${{ matrix.image_name }}" = "frontend" ]; then
+            {
+              echo 'value<<EOF'
+              echo "VITE_COMMIT_SHA=${{ github.sha }}"
+              echo "VITE_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo 'value=' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (local — scan tag, no push)
+        id: build-local
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          build-args: ${{ steps.build-args.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- Vulnerability and configuration scans (before push) ----
+
+      # Trivy vuln scan: informational only (exit-code 0, SARIF upload).
+      # Trivy sources Debian CVE severity from DSA, which rates some packages HIGH
+      # where NVD rates them MEDIUM.  ignore-unfixed:true does not suppress these
+      # because DSA records a fix in Debian unstable.  Grype (NVD/GHSA) is the
+      # primary blocking CVE gate; Trivy vuln findings are visible in the Security tab.
+      - name: Scan — Trivy vuln (informational SARIF)
+        id: trivy-vuln
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: os
+          format: sarif
+          output: trivy-${{ matrix.image_name }}-vuln.sarif
+
+      - name: Upload Trivy vuln SARIF to Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b0c4fd77f6c559021d78430ec4d0d169ae74a4eb  # v3
+        with:
+          sarif_file: trivy-${{ matrix.image_name }}-vuln.sarif
+          category: container-${{ matrix.image_name }}-vuln
+
+      - name: Scan — Trivy misconfig + secret
+        id: trivy-ms
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          scanners: misconfig,secret
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          format: sarif
+          output: trivy-ms-${{ matrix.image_name }}.sarif
+
+      - name: Upload Trivy misconfig+secret SARIF to Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b0c4fd77f6c559021d78430ec4d0d169ae74a4eb  # v3
+        with:
+          sarif_file: trivy-ms-${{ matrix.image_name }}.sarif
+          category: container-ms-${{ matrix.image_name }}
+
+      - name: Scan — Grype (CVE, second opinion)
+        id: grype
+        continue-on-error: true
+        uses: anchore/scan-action@d43cc1dfea6a99ed123bf8f3133f1797c9b44492  # v4.1.0
+        env:
+          GRYPE_DB_VALIDATE_AGE: 'false'
+          GRYPE_CONFIG: .grype.yaml
+        with:
+          image: ${{ matrix.image_name }}:scan-${{ github.sha }}
+          severity-cutoff: high
+          fail-build: true
+          only-fixed: true
+          output-format: table
+
+      - name: Audit — Dockle (CIS Benchmark)
+        id: dockle
+        continue-on-error: true
+        run: |
+          # .dockleignore is mounted at /.dockleignore; Dockle auto-reads it
+          # from its working directory (/) without requiring --ignore-file.
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ github.workspace }}/.dockleignore:/.dockleignore" \
+            goodwithtech/dockle:v0.4.15 \
+            --exit-code 1 \
+            --exit-level warn \
+            "${{ matrix.image_name }}:scan-${{ github.sha }}"
+
+      - name: Enforce scan gate
+        if: always()
+        shell: bash
+        run: |
+          # Gate logic:
+          #   trivy-ms  — blocking: misconfig + secret findings have no vendor-severity
+          #               variance; any HIGH/CRITICAL finding must be remediated.
+          #   grype     — blocking: primary CVE gate using NVD/GHSA severity (only-fixed).
+          #   dockle    — blocking: CIS Benchmark violations.
+          #   trivy-vuln — informational only; findings visible via SARIF in Security tab.
+          FAILED=0
+          if [[ "${{ steps.trivy-vuln.outcome }}" == "failure" ]]; then
+            echo "::warning::Trivy vuln scan found HIGH/CRITICAL CVEs — review SARIF in Security tab."
+          fi
+          [[ "${{ steps.trivy-ms.outcome }}" == "failure" ]] && FAILED=1 && echo "::error::Trivy scan found misconfigurations or secrets."
+          [[ "${{ steps.grype.outcome }}" == "failure" ]] && FAILED=1 && echo "::error::Grype scan found HIGH/CRITICAL CVEs."
+          [[ "${{ steps.dockle.outcome }}" == "failure" ]] && FAILED=1 && echo "::error::Dockle audit found CIS Benchmark violations."
+          if [[ "$FAILED" -eq 1 ]]; then
+            echo "::error::One or more image scans failed — see scan step output above."
+            exit 1
+          fi
+
+      # ---- Push (only after all scans pass) ----
+
+      - name: Build (and push on main when configured)
+        id: build
+        if: steps.push-gate.outputs.enabled == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.image-tags.outputs.tags }}
+          build-args: ${{ steps.build-args.outputs.value }}
+          cache-from: type=gha
+
+      - name: Write build metadata
+        shell: bash
+        run: |
+          mkdir -p /tmp/build-metadata
+          printf '%s' "${{ steps.push-gate.outputs.enabled }}" > /tmp/build-metadata/push-enabled.txt
+          if [[ "${{ steps.push-gate.outputs.enabled }}" == 'true' ]]; then
+            printf '%s' "${{ steps.build.outputs.digest }}" > /tmp/build-metadata/digest.txt
+          else
+            printf '' > /tmp/build-metadata/digest.txt
+          fi
+
+      - name: Upload build metadata artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: build-metadata-${{ matrix.image_name }}
+          path: /tmp/build-metadata
+          retention-days: 7
+
+      - name: Write and upload image digest
+        if: steps.push-gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          echo "${{ steps.build.outputs.digest }}" > /tmp/digest.txt
+
+      - name: Upload image digest artifact
+        if: steps.push-gate.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: image-digest-${{ matrix.image_name }}
+          path: /tmp/digest.txt
+          retention-days: 7
+
+  sign-images:
+    needs: build-images
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image_name: [frontend, temporal-worker]
+    steps:
+      - name: Download build metadata artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: build-metadata-${{ matrix.image_name }}
+          path: /tmp/build-metadata
+
+      - name: Read image metadata
+        id: metadata
+        shell: bash
+        run: |
+          enabled=''
+          digest=''
+
+          if [[ -f /tmp/build-metadata/push-enabled.txt ]]; then
+            enabled=$(tr -d '[:space:]' < /tmp/build-metadata/push-enabled.txt)
+          fi
+
+          if [[ -f /tmp/build-metadata/digest.txt ]]; then
+            digest=$(tr -d '[:space:]' < /tmp/build-metadata/digest.txt)
+          fi
+
+          if [[ "${enabled}" == 'true' && -z "${digest}" ]]; then
+            echo "Expected a pushed digest for ${{ matrix.image_name }} but build metadata was empty." >&2
+            exit 1
+          fi
+
+          echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ACR
+        if: steps.metadata.outputs.enabled == 'true'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ${{ vars.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Install Cosign
+        if: steps.metadata.outputs.enabled == 'true'
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
+
+      - name: Sign pushed image digest
+        if: steps.metadata.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          cosign sign --yes \
+            "${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image_name }}@${{ steps.metadata.outputs.digest }}"
+
+      - name: Generate image SBOM
+        if: steps.metadata.outputs.enabled == 'true'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          image: ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image_name }}@${{ steps.metadata.outputs.digest }}
+          registry-username: ${{ secrets.ACR_USERNAME }}
+          registry-password: ${{ secrets.ACR_PASSWORD }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.image_name }}.spdx.json
+          upload-artifact: false
+
+      - name: Attest pushed image digest
+        if: steps.metadata.outputs.enabled == 'true'
+        # Private-org billing plans without GitHub Attestations API support fail this step.
+        # Keep it non-blocking because the SLSA generator jobs still publish provenance.
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2.4.0
+        with:
+          subject-name: ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image_name }}
+          subject-digest: ${{ steps.metadata.outputs.digest }}
+          push-to-registry: true
+
+      - name: Upload SBOM artifact
+        if: steps.metadata.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: sbom-${{ matrix.image_name }}.spdx.json
+          path: sbom-${{ matrix.image_name }}.spdx.json
+          retention-days: 7
+
+  prepare-provenance-inputs:
+    needs: build-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      frontend_enabled: ${{ steps.provenance.outputs.frontend_enabled }}
+      frontend_image: ${{ steps.provenance.outputs.frontend_image }}
+      frontend_digest: ${{ steps.provenance.outputs.frontend_digest }}
+      temporal_worker_enabled: ${{ steps.provenance.outputs.temporal_worker_enabled }}
+      temporal_worker_image: ${{ steps.provenance.outputs.temporal_worker_image }}
+      temporal_worker_digest: ${{ steps.provenance.outputs.temporal_worker_digest }}
+    steps:
+      - name: Download build metadata artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          path: /tmp/build-metadata
+          pattern: build-metadata-*
+
+      - name: Read provenance inputs
+        id: provenance
+        shell: bash
+        env:
+          REGISTRY: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          read_metadata() {
+            local image_name="$1"
+            local prefix="$2"
+            local metadata_dir="/tmp/build-metadata/build-metadata-${image_name}"
+            local enabled=''
+            local digest=''
+
+            if [[ -f "${metadata_dir}/push-enabled.txt" ]]; then
+              enabled=$(tr -d '[:space:]' < "${metadata_dir}/push-enabled.txt")
+            fi
+            if [[ -f "${metadata_dir}/digest.txt" ]]; then
+              digest=$(tr -d '[:space:]' < "${metadata_dir}/digest.txt")
+            fi
+
+            echo "${prefix}_enabled=${enabled}" >> "$GITHUB_OUTPUT"
+            echo "${prefix}_digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${prefix}_image=${REGISTRY}/${image_name}" >> "$GITHUB_OUTPUT"
+          }
+
+          read_metadata frontend frontend
+          read_metadata temporal-worker temporal_worker
+
+  frontend-provenance:
+    needs: prepare-provenance-inputs
+    if: >-
+      ${{
+        needs.prepare-provenance-inputs.outputs.frontend_enabled == 'true'
+        && needs.prepare-provenance-inputs.outputs.frontend_digest != ''
+      }}
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0  # reusable workflow requires a full semver tag
+    with:
+      image: ${{ needs.prepare-provenance-inputs.outputs.frontend_image }}
+      digest: ${{ needs.prepare-provenance-inputs.outputs.frontend_digest }}
+      private-repository: true
+    secrets:
+      registry-username: ${{ secrets.ACR_USERNAME }}
+      registry-password: ${{ secrets.ACR_PASSWORD }}
+
+  temporal-worker-provenance:
+    needs: prepare-provenance-inputs
+    if: >-
+      ${{
+        needs.prepare-provenance-inputs.outputs.temporal_worker_enabled == 'true'
+        && needs.prepare-provenance-inputs.outputs.temporal_worker_digest != ''
+      }}
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0  # reusable workflow requires a full semver tag
+    with:
+      image: ${{ needs.prepare-provenance-inputs.outputs.temporal_worker_image }}
+      digest: ${{ needs.prepare-provenance-inputs.outputs.temporal_worker_digest }}
+      private-repository: true
+    secrets:
+      registry-username: ${{ secrets.ACR_USERNAME }}
+      registry-password: ${{ secrets.ACR_PASSWORD }}

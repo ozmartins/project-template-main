@@ -1,0 +1,69 @@
+repository:
+  owner: Volaris-AI
+  name: project-template
+  default_branch: main
+  project_owner: Volaris-AI
+  project_number: 18   # Project Template — Security & Quality Roadmap
+
+factory:
+  # Keep the pipeline full: the PM fills up to this many concurrent Copilot PRs each
+  # run. Raised 3 → 8 so the ~15-min single-pass fast pipeline always has work in
+  # flight. Trade-off: more concurrent PRs = more shared-file merge conflicts/drift;
+  # mitigated by the PM's contamination re-kick + the honest push:main validation gate.
+  max_open_copilot_prs: 8
+  auto_merge_low_risk: false
+  active_runner_profile: github-hosted-mvp
+  # Default per-agent work-phase budget (minutes). Heavy agents (tech-reviewer,
+  # factory-architect) override with `timeout_minutes` in their frontmatter.
+  agent_timeout_minutes: 10
+
+runners:
+  default_agent: ubuntu-latest
+  github_hosted: ubuntu-latest
+  self_hosted:
+    build: [self-hosted, linux, x64, factory-build]
+    deploy_nonprod: [self-hosted, linux, x64, factory-deploy-nonprod]
+    prod_ops: [self-hosted, linux, x64, factory-prod-ops]
+    cluster_guardian: [self-hosted, linux, x64, factory-cluster-guardian]
+
+stack:
+  frontend: vite-react
+  worker: temporal-python
+  database: supabase-postgres
+  deployment: docker-compose
+  deployment_profiles:
+    - local-compose
+    - kubernetes-app
+
+cluster_guardian:
+  # Template contract: keep placeholders so forks can substitute their own
+  # namespace prefix.
+  allowed_namespaces:
+    - <NAMESPACE_PREFIX>-dev
+    - <NAMESPACE_PREFIX>-test
+  issue_label: auto:cluster
+
+ops:
+  namespace_prefix: 10x-stack
+  aks_cluster_nonprod: aks-selfheal-staging
+  aks_resource_group_nonprod: rg-selfheal-staging
+  acr_name_nonprod: acrselfhealstg
+  supabase_namespace: 10x-stack-supabase
+  supabase_backup_target: supabase-postgres
+
+commands:
+  frontend_lint:
+    cmd: "npm --prefix frontend run lint"
+    optional: false
+  frontend_build:
+    cmd: "npm --prefix frontend run build"
+    optional: false
+  frontend_test:
+    cmd: "npm --prefix frontend test -- --run"
+    optional: true   # no test script yet; skip gracefully
+  worker_test:
+    cmd: "python -m pytest temporal/tests"
+    optional: true   # no tests yet; skip gracefully
+  db_validate:
+    cmd: "supabase db reset --config supabase/config.toml"
+    optional: true   # requires local Supabase stack

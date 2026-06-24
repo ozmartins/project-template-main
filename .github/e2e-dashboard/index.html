@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>E2E trends</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 32px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+  .card { border: 1px solid #d0d7de; border-radius: 8px; padding: 12px 16px; min-width: 130px; }
+  .card .v { font-size: 22px; font-weight: 600; } .card .l { color: #656d76; font-size: 12px; }
+  canvas { max-height: 280px; } table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid #d0d7de; padding: 6px 8px; text-align: left; } td.n { text-align: right; }
+  .controls { margin: 8px 0; } .muted { color: #656d76; }
+</style>
+</head>
+<body>
+<h1>E2E trends</h1>
+<p class="muted">Reads <code>runs.jsonl</code> from this branch. Source of truth — no server.</p>
+<div class="controls">
+  Suite:
+  <select id="suite"><option value="smoke">smoke</option><option value="experience">experience</option></select>
+  &nbsp; Last <select id="window"><option>50</option><option>100</option><option>250</option><option value="0">all</option></select> runs
+</div>
+<div class="cards" id="cards"></div>
+<h2>Pass rate</h2><canvas id="passChart"></canvas>
+<h2>Run duration (s)</h2><canvas id="durChart"></canvas>
+<h2>Unstable tests (recent)</h2><div id="unstable"></div>
+<script>
+let RAW = [];
+async function load() {
+  const res = await fetch('runs.jsonl', { cache: 'no-store' });
+  const text = await res.text();
+  RAW = text.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  RAW.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+  render();
+}
+let passC, durC;
+function render() {
+  const suite = document.getElementById('suite').value;
+  const win = +document.getElementById('window').value;
+  let rows = RAW.filter(r => r.suite === suite);
+  if (win) rows = rows.slice(-win);
+  const labels = rows.map(r => (r.ts || '').slice(5, 16).replace('T', ' '));
+
+  const passed = rows.filter(r => r.outcome === 'passed').length;
+  const cards = [
+    ['Pass rate', rows.length ? Math.round(passed / rows.length * 100) + '%' : '—'],
+    ['Runs', rows.length],
+    ['Latest', rows.length ? rows[rows.length - 1].outcome : '—'],
+    ['Avg duration', rows.length ? (rows.reduce((a, r) => a + (r.stats?.duration_ms || 0), 0) / rows.length / 1000).toFixed(1) + 's' : '—'],
+  ];
+  document.getElementById('cards').innerHTML = cards.map(c => `<div class="card"><div class="v">${c[1]}</div><div class="l">${c[0]}</div></div>`).join('');
+
+  const mk = (ctx, prev, label, data, color, yMax) => {
+    if (prev) prev.destroy();
+    return new Chart(ctx, { type: 'line', data: { labels, datasets: [{ label, data, borderColor: color, backgroundColor: color, tension: 0.2, pointRadius: 2 }] },
+      options: { scales: { y: { beginAtZero: true, max: yMax } }, plugins: { legend: { display: false } } } });
+  };
+  passC = mk(document.getElementById('passChart'), passC, 'pass %', rows.map(r => (r.pass_rate ?? 0) * 100), '#1f883d', 100);
+  durC = mk(document.getElementById('durChart'), durC, 'duration s', rows.map(r => (r.stats?.duration_ms ?? 0) / 1000), '#0969da');
+
+  const agg = {};
+  for (const r of rows) for (const t of (r.tests || [])) {
+    const a = agg[t.title] || (agg[t.title] = { title: t.title, fails: 0, flakies: 0 });
+    if (t.status === 'failed') a.fails++; if (t.status === 'flaky') a.flakies++;
+  }
+  const unstable = Object.values(agg).filter(a => a.fails || a.flakies).sort((x, y) => (y.fails + y.flakies) - (x.fails + x.flakies)).slice(0, 20);
+  document.getElementById('unstable').innerHTML = unstable.length
+    ? `<table><tr><th>Test</th><th class="n">Fails</th><th class="n">Flakies</th></tr>${unstable.map(a => `<tr><td>${a.title}</td><td class="n">${a.fails}</td><td class="n">${a.flakies}</td></tr>`).join('')}</table>`
+    : '<p class="muted">No failing/flaky tests in window 🎉</p>';
+}
+document.getElementById('suite').onchange = render;
+document.getElementById('window').onchange = render;
+load();
+</script>
+</body>
+</html>

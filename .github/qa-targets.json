@@ -1,0 +1,22 @@
+{
+  "suites": {
+    "unit": { "pass_rate_7d_min": 95, "flakiness_max": 2 },
+    "temporal": { "pass_rate_7d_min": 90, "flakiness_max": 5 },
+    "helm": { "pass_rate_7d_min": 99 },
+    "seed": { "pass_rate_7d_min": 99 },
+    "smoke": { "pass_rate_7d_min": 95, "flakiness_max": 2 },
+    "experience": { "pass_rate_7d_min": 80 }
+  },
+  "quality": {
+    "tsc_errors_max": 0,
+    "eslint_errors_max": 0,
+    "ruff_errors_max": 0,
+    "sast_critical_max": 0,
+    "sast_high_max": 3,
+    "vulnerable_deps_critical_max": 0
+  },
+  "deploy": {
+    "max_hours_since_last_dev_deploy": 24,
+    "max_hours_since_last_test_deploy": 168
+  }
+}

@@ -1,0 +1,213 @@
+name: Pipeline - Hourly
+
+# Staged cadence pipeline per ADR-0025.
+# Runs at :30 each hour (offset from the fast pipeline at :00) so the two
+# pipelines do not compete for the same runner slot or API quota.
+#
+# Stage order:
+#   1. factory-architect  — converts backlog items into implementation-ready specs/ADRs
+#   2. qa-manager         — reviews test coverage gaps and filed UX/quality improvements
+#   3. operations-manager — environment health, cost/security posture, backup validation
+#   4. cluster-guardian   — <NAMESPACE_PREFIX>* namespace health check (skips gracefully if the
+#                            kubernetes-app profile / self-hosted runner is unavailable)
+#
+# operations-manager and cluster-guardian run hourly (not daily) so env/runtime and
+# namespace health problems surface within the hour.
+#
+# Each stage is an independent GitHub Actions step with continue-on-error: true and
+# a per-stage timeout so a failing/hung stage never blocks the next one.
+# Stage outcome is appended to $GITHUB_STEP_SUMMARY.
+
+on:
+  schedule:
+    - cron: '30 * * * *'   # hourly at :30, offset from pipeline-fast (:00)
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-hourly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: read
+  security-events: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  factory_architect_publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: read
+      actions: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Hourly pipeline — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Stage | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 1: Factory Architect (publish) ───────────────────────────────────
+      - name: Stage — Factory Architect
+        id: factory_architect
+        continue-on-error: true
+        timeout-minutes: 12
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent factory-architect
+
+      - name: Summarise — Factory Architect
+        if: always()
+        env:
+          OUTCOME: ${{ steps.factory_architect.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| factory-architect | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+  hourly_readonly_stages:
+    needs: factory_architect_publish
+    # Run read-only stages even if the publish stage fails.
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      actions: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Hourly pipeline — read-only stages — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Stage | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 2: QA Manager ────────────────────────────────────────────────────
+      - name: Stage — QA Manager
+        id: qa_manager
+        continue-on-error: true
+        timeout-minutes: 20
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent qa-manager
+
+      - name: Summarise — QA Manager
+        if: always()
+        env:
+          OUTCOME: ${{ steps.qa_manager.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| qa-manager | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 3: Operations Manager ────────────────────────────────────────────
+      - name: Stage — Operations Manager
+        id: ops_manager
+        continue-on-error: true
+        timeout-minutes: 18
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          OPS_CHECK_SCOPE: public
+        run: npx tsx src/run-agent.ts --agent operations-manager
+
+      - name: Summarise — Operations Manager
+        if: always()
+        env:
+          OUTCOME: ${{ steps.ops_manager.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| operations-manager | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 4: Cluster Guardian ──────────────────────────────────────────────
+      # Requires the kubernetes-app deployment profile and a configured self-hosted
+      # runner (see factory.yml). On github-hosted runners it exits after the preflight
+      # gate with a skip summary — continue-on-error ensures the hourly pipeline does
+      # not fail when the profile is not active.
+      - name: Stage — Cluster Guardian
+        id: cluster_guardian
+        continue-on-error: true
+        timeout-minutes: 18
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent cluster-guardian
+
+      - name: Summarise — Cluster Guardian
+        if: always()
+        env:
+          OUTCOME: ${{ steps.cluster_guardian.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| cluster-guardian | $STATUS |" >> "$GITHUB_STEP_SUMMARY"

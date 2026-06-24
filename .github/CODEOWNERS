@@ -1,0 +1,25 @@
+# Control-plane ownership — see #277.
+#
+# The factory merges product/app PRs autonomously (the human merge gate was removed
+# 2026-06-07). But the factory must not be able to silently rewrite the workflows,
+# agent definitions, RBAC, secrets, and architecture decisions that GOVERN it. These
+# paths require review by a human/control-plane owner before merge.
+#
+# NOTE: CODEOWNERS only enforces review when branch protection has
+# "Require review from Code Owners" enabled on `main`. Enabling that branch-protection
+# rule is the second half of #277 and must be done in repo settings.
+
+# The factory's own control plane
+/.github/                @ianreay
+/.github/workflows/      @ianreay
+/.github/agents/         @ianreay
+
+# Deploy RBAC and cluster security posture
+/deploy/k8s/             @ianreay
+/charts/app/templates/   @ianreay
+
+# Architecture decisions (immutable once accepted)
+/docs/adrs/              @ianreay
+
+# Secret-handling scripts
+/scripts/seed-demo-users.sh @ianreay

@@ -1,0 +1,498 @@
+name: Test - E2E Dev
+
+# Real-environment end-to-end smoke: drives the DEPLOYED dev app with a browser
+# (Playwright), hourly + after each dev deploy + on demand. On failure it files a
+# deduplicated incident so the factory can pick it up.
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # hourly (off the :00 mark)
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy - Dev"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: e2e-dev
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Playwright smoke vs dev
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      issues: write
+    env:
+      # Public URL of the deployed dev frontend. Override via repo variable.
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+      E2E_AUTH_EMAIL: ${{ secrets.E2E_AUTH_EMAIL }}
+      E2E_AUTH_PASSWORD: ${{ secrets.E2E_AUTH_PASSWORD }}
+      E2E_READONLY_EMAIL: ${{ secrets.E2E_READONLY_EMAIL }}
+      E2E_READONLY_PASSWORD: ${{ secrets.E2E_READONLY_PASSWORD }}
+      E2E_MANAGER_EMAIL: ${{ secrets.E2E_MANAGER_EMAIL }}
+      E2E_MANAGER_PASSWORD: ${{ secrets.E2E_MANAGER_PASSWORD }}
+      E2E_OPERATOR_EMAIL: ${{ secrets.E2E_OPERATOR_EMAIL }}
+      E2E_OPERATOR_PASSWORD: ${{ secrets.E2E_OPERATOR_PASSWORD }}
+      # E2E_MFA_CODE: static TOTP code (bypasses derivation); E2E_MFA_SECRET:
+      # base32 TOTP secret used by smoke.spec.ts to derive a live code when
+      # E2E_MFA_CODE is absent (see frontend/e2e/smoke.spec.ts resolveMfaCode).
+      E2E_MFA_CODE: ${{ secrets.E2E_MFA_CODE }}
+      E2E_MFA_SECRET: ${{ secrets.E2E_MFA_SECRET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Check deployed dev base URL
+        id: url-check
+        run: |
+          if [ -z "${E2E_BASE_URL:-}" ]; then
+            echo "::warning::vars.E2E_BASE_URL is not set in the dev environment — skipping E2E smoke. Configure this variable to the deployed dev app URL to enable E2E testing. See .github/FACTORY-ACTIVATION.md step 5."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$E2E_BASE_URL" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::vars.E2E_BASE_URL must start with http:// or https:// (got: $E2E_BASE_URL)"
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        if: steps.url-check.outputs.skip != 'true'
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        if: steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        if: steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E smoke against ${{ env.E2E_BASE_URL }}
+        if: steps.url-check.outputs.skip != 'true'
+        id: e2e
+        working-directory: frontend
+        run: npx playwright test smoke.spec.ts navigation.spec.ts auth-access-control.spec.ts roles-data-access.spec.ts ops-findings.spec.ts ops-approval.spec.ts
+
+      - name: Upload smoke results (for trend history)
+        if: always() && steps.url-check.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: smoke-results
+          path: frontend/e2e-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summarize
+        if: always() && steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: |
+          {
+            echo "## E2E vs dev — ${E2E_BASE_URL}"
+            if [ -f e2e-results.json ]; then
+              node -e "const r=require('./e2e-results.json');const s=r.stats||{};console.log('- expected: '+(s.expected??'?')+'  unexpected(failed): '+(s.unexpected??'?')+'  flaky: '+(s.flaky??'?')+'  skipped: '+(s.skipped??'?'))" 2>/dev/null || true
+            fi
+            echo "- result: ${{ steps.e2e.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce smoke skip budget
+        if: always() && steps.url-check.outputs.skip != 'true' && steps.e2e.outcome != 'skipped'
+        working-directory: frontend
+        run: |
+          if [ ! -f e2e-results.json ]; then
+            echo "::error::Expected frontend/e2e-results.json after smoke test execution."
+            exit 1
+          fi
+          # When auth credentials are absent, all auth-requiring tests intentionally skip.
+          # Relax the budget to 1.0 so expected config-gate skips don't fail CI.
+          # The 0.25 budget is enforced when auth IS configured to catch accidental skips.
+          AUTH_BUDGET=$([ -z "${E2E_AUTH_EMAIL:-}" ] && echo 1.0 || echo 0.25)
+          if [ -z "${E2E_AUTH_EMAIL:-}" ]; then
+            echo "::warning::E2E_AUTH_EMAIL not configured — relaxing smoke skip budget to 100% (intentional auth-gate skips expected)."
+          fi
+          node ../.github/scripts/check-e2e-skip-budget.mjs smoke e2e-results.json "$AUTH_BUDGET"
+
+      - name: Upload trace/report on failure
+        if: failure() && steps.url-check.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+            frontend/e2e-results.json
+          retention-days: 7
+
+      - name: File / update incident on failure
+        if: failure() && steps.url-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          FP="<!-- fingerprint:e2e-dev-failure -->"
+          # Extract failing test titles (best-effort)
+          FAILS="$(node -e "try{const r=require('./frontend/e2e-results.json');const out=[];const walk=s=>{(s.suites||[]).forEach(walk);(s.specs||[]).forEach(sp=>sp.tests.forEach(t=>{if(t.results.some(x=>x.status!=='passed'&&x.status!=='skipped'))out.push(sp.title)}))};(r.suites||[]).forEach(walk);console.log(out.slice(0,15).map(x=>'- '+x).join('\n'))}catch(e){console.log('- (see run logs / artifact)')}" 2>/dev/null)"
+          BODY="$(printf '%s\n\n**E2E smoke failed against the dev environment** (%s).\n\nFailing checks:\n%s\n\nEvidence: %s\nArtifact: playwright-report (trace + screenshots).\n\nLikely causes: dev deploy broken, a route crashing, or Supabase/data outage.\n%s' "🚨 E2E dev failure" "$E2E_BASE_URL" "$FAILS" "$RUN_URL" "$FP")"
+          # Dedup: list ALL open issues and match the fingerprint locally with jq. Use the
+          # LIST api (strongly consistent), NOT `--search` — the search index lags by minutes
+          # and strips HTML-comment punctuation, so near-simultaneous runs each filed a fresh
+          # incident. The list is small; don't filter by label (triage may relabel). Target the
+          # OLDEST match so follow-up comments accumulate on one canonical issue.
+          EXISTING="$(gh issue list --state open --limit 300 --json number,body \
+            --jq "[.[] | select(.body | contains(\"$FP\"))] | min_by(.number).number // empty")"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Still failing as of $RUN_URL"$'\n\n'"$FAILS"
+            echo "updated incident #$EXISTING"
+          else
+            gh issue create --title "E2E dev smoke failing against $E2E_BASE_URL" \
+              --label "auto:alert,queue:platform,priority:high" --body "$BODY"
+          fi
+
+  entity-drilldown:
+    name: Entity drill-down vs dev
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+      E2E_AUTH_EMAIL: ${{ secrets.E2E_AUTH_EMAIL }}
+      E2E_AUTH_PASSWORD: ${{ secrets.E2E_AUTH_PASSWORD }}
+      E2E_MFA_CODE: ${{ secrets.E2E_MFA_CODE }}
+      E2E_MFA_SECRET: ${{ secrets.E2E_MFA_SECRET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Skip when auth credentials absent
+        id: creds-check
+        run: |
+          if [ -z "${E2E_AUTH_EMAIL:-}" ] || [ -z "${E2E_AUTH_PASSWORD:-}" ]; then
+            echo "E2E_AUTH_EMAIL not configured — skipping entity drill-down."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check deployed dev base URL
+        if: steps.creds-check.outputs.skip != 'true'
+        id: url-check
+        run: |
+          if [ -z "${E2E_BASE_URL:-}" ]; then
+            echo "::warning::vars.E2E_BASE_URL is not set — skipping entity drill-down."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$E2E_BASE_URL" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::vars.E2E_BASE_URL must start with http:// or https:// (got: $E2E_BASE_URL)"
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        if: steps.creds-check.outputs.skip != 'true' && steps.url-check.outputs.skip != 'true'
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        if: steps.creds-check.outputs.skip != 'true' && steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        if: steps.creds-check.outputs.skip != 'true' && steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run deployed-dev entity detail drill-down
+        if: steps.creds-check.outputs.skip != 'true' && steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npx playwright test auth-access-control.spec.ts --grep "@entity-drilldown"
+
+      - name: Assert drill-down test executed
+        if: steps.creds-check.outputs.skip != 'true' && steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: |
+          node <<'NODE'
+          const results = require('./e2e-results.json');
+          const expected = results?.stats?.expected ?? 0;
+          if (expected < 1) {
+            console.error('Expected at least one deployed-dev entity drill-down test to execute.');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Upload drill-down trace/report on failure
+        if: failure() && steps.url-check.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: entity-drilldown-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+            frontend/e2e-results.json
+          retention-days: 7
+
+  experience:
+    name: Good-UX expectations (non-gating)
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    # Informational: these are allowed to fail. Failures are the QA Manager's
+    # signal to file UX-improvement tickets — they never block or page.
+    continue-on-error: true
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+      E2E_AUTH_EMAIL: ${{ secrets.E2E_AUTH_EMAIL }}
+      E2E_AUTH_PASSWORD: ${{ secrets.E2E_AUTH_PASSWORD }}
+      E2E_MFA_CODE: ${{ secrets.E2E_MFA_CODE }}
+      E2E_MFA_SECRET: ${{ secrets.E2E_MFA_SECRET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Check deployed dev base URL
+        id: url-check
+        run: |
+          if [ -z "${E2E_BASE_URL:-}" ]; then
+            echo "::warning::vars.E2E_BASE_URL is not set — skipping good-UX expectations."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$E2E_BASE_URL" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::vars.E2E_BASE_URL must start with http:// or https:// (got: $E2E_BASE_URL)"
+              exit 1
+              ;;
+          esac
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        if: steps.url-check.outputs.skip != 'true'
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps
+        if: steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright browser
+        if: steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run good-UX expectations (failures = improvement backlog, not errors)
+        if: steps.url-check.outputs.skip != 'true'
+        id: experience_e2e
+        working-directory: frontend
+        run: npx playwright test experience.spec.ts || true
+      - name: Summarize experience gaps
+        if: always() && steps.url-check.outputs.skip != 'true'
+        working-directory: frontend
+        run: |
+          {
+            echo "## Good-UX expectations vs ${E2E_BASE_URL}"
+            echo "Failures below are NOT deploy blockers — they are the UX-improvement backlog."
+            echo "The QA Manager reviews these + the page definitions and files \`ux\` tickets."
+            if [ -f e2e-results.json ]; then
+              node -e "const r=require('./e2e-results.json');const s=r.stats||{};console.log('- met: '+(s.expected??'?')+'  unmet(UX gaps): '+(s.unexpected??'?'))" 2>/dev/null || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce experience skip budget
+        if: always() && steps.url-check.outputs.skip != 'true' && steps.experience_e2e.outcome != 'skipped'
+        working-directory: frontend
+        run: |
+          if [ ! -f e2e-results.json ]; then
+            echo "::error::Expected frontend/e2e-results.json after experience test execution."
+            exit 1
+          fi
+          # When auth credentials are absent, all auth-requiring tests intentionally skip.
+          # Relax the budget to 1.0 so expected config-gate skips don't fail CI.
+          # The 0.25 budget is enforced when auth IS configured to catch accidental skips.
+          AUTH_BUDGET=$([ -z "${E2E_AUTH_EMAIL:-}" ] && echo 1.0 || echo 0.25)
+          if [ -z "${E2E_AUTH_EMAIL:-}" ]; then
+            echo "::warning::E2E_AUTH_EMAIL not configured — relaxing experience skip budget to 100% (intentional auth-gate skips expected)."
+          fi
+          node ../.github/scripts/check-e2e-skip-budget.mjs experience e2e-results.json "$AUTH_BUDGET"
+      - name: Upload experience report
+        if: always() && steps.url-check.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: experience-report
+          path: |
+            frontend/test-results/
+            frontend/e2e-results.json
+          retention-days: 7
+
+      - name: Upload experience results (for trend history)
+        if: always() && steps.url-check.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: experience-results
+          path: frontend/e2e-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish-history:
+    name: Append results to e2e-history + render dashboard
+    needs: [e2e, entity-drilldown, experience]
+    if: always()
+    runs-on: ubuntu-latest
+    # Keep this on the dev environment so vars.E2E_BASE_URL resolves consistently
+    # when writing history records (base_url in runs.jsonl).
+    environment: dev
+    permissions:
+      contents: write
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+    steps:
+      # Check out main only to get the record/render scripts + the index.html template.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/e2e-dashboard
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      # Per-suite Playwright JSON, always uploaded by the jobs above. Either may be
+      # absent if a runner died before writing it; the record script handles that.
+      - name: Download smoke results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: smoke-results
+          path: artifacts/smoke
+        continue-on-error: true
+      - name: Download experience results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: experience-results
+          path: artifacts/experience
+        continue-on-error: true
+
+      - name: Append records + render, then push to e2e-history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH=e2e-history
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          # Build this run's new record lines from whatever artifacts arrived.
+          : > new-records.jsonl
+          if [ -f artifacts/smoke/e2e-results.json ]; then
+            node .github/scripts/e2e-history-record.mjs --suite smoke --results artifacts/smoke/e2e-results.json >> new-records.jsonl
+          fi
+          if [ -f artifacts/experience/e2e-results.json ]; then
+            node .github/scripts/e2e-history-record.mjs --suite experience --results artifacts/experience/e2e-results.json >> new-records.jsonl
+          fi
+          if [ ! -s new-records.jsonl ]; then
+            echo "No results to record (both artifacts missing) — nothing to publish."
+            exit 0
+          fi
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Push with a fetch/rebase-of-the-file retry loop so concurrent runs can't
+          # clobber each other's appends to runs.jsonl.
+          for attempt in 1 2 3 4 5; do
+            rm -rf hist && mkdir hist && cd hist
+            git init -q
+            git remote add origin "$REPO_URL"
+            if git fetch -q --depth 1 origin "$BRANCH"; then
+              git checkout -q -b "$BRANCH" FETCH_HEAD
+            else
+              git checkout -q --orphan "$BRANCH"
+            fi
+            cat ../new-records.jsonl >> runs.jsonl
+            cp ../.github/e2e-dashboard/index.html index.html
+            node ../.github/scripts/e2e-history-render.mjs .
+            git add -A
+            git commit -q -m "e2e: record run ${GITHUB_RUN_ID} ($(wc -l < ../new-records.jsonl | tr -d ' ') suite result(s))"
+            if git push -q origin "$BRANCH"; then
+              echo "Published to $BRANCH (attempt $attempt)."
+              cd ..
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) — likely a concurrent update; retrying."
+            cd ..
+          done
+          echo "Failed to publish after retries." >&2
+          exit 1
+
+      - name: Link in job summary
+        if: always()
+        run: |
+          {
+            echo "## E2E trend history"
+            echo "Dashboard: browse the [\`e2e-history\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/e2e-history) branch (README renders the charts)."
+            echo "Raw feed: \`runs.jsonl\` on that branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [publish-history]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: e2e-dev
+          WORKFLOW_CATEGORY: e2e
+          WORKFLOW_ENV:
+          WORKFLOW_CLOUD:
+          WORKFLOW_METRICS: '{}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

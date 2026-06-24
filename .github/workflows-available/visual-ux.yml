@@ -1,0 +1,117 @@
+name: Visual UX review (daily)
+
+# Daily, NON-GATING UX review of the deployed dev app.
+#  1. Capture — drive the existing e2e journeys (experience.spec.ts) against deployed
+#     dev at two breakpoints, writing a full-page screenshot + axe-core report per test
+#     into visual-artifacts/ (see frontend/e2e/ux-capture.fixture.ts).
+#  2. Reflect — the vision-capable `ux-vision-reviewer` agent looks at those screenshots
+#     and files DEDUPED `ux` improvement tickets (see .github/agents/ux-vision-reviewer.agent.md).
+#
+# This never gates a deploy and never pages — it generates a usability backlog. It is the
+# pixel-level complement to the QA Manager's DOM-level experience review.
+
+on:
+  schedule:
+    - cron: '0 5 * * *'   # daily at 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: visual-ux
+  cancel-in-progress: false
+
+jobs:
+  visual-ux:
+    name: Capture screenshots + reflect on UX
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL || 'https://wynne-app-a4bde4gwecdnfpfb.a02.azurefd.net/' }}
+      UX_ARTIFACT_DIR: ${{ github.workspace }}/visual-artifacts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Node 22 for BOTH steps: Playwright runs fine on 22, and the Copilot SDK's bundled
+      # CLI server requires node:sqlite (Node >= 22) or it crashes before any model call.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Install shared agent runtime
+        working-directory: .github/tools/shared
+        run: npm ci
+
+      # ── 1. Capture ────────────────────────────────────────────────────────────────
+      # Non-gating: the journeys' own pass/fail doesn't matter here, we only need the
+      # end-state screenshots. Always continue to the reflect step with whatever captured.
+      - name: Capture screenshots + axe (experience journeys, 2 breakpoints)
+        id: capture
+        continue-on-error: true
+        working-directory: frontend
+        env:
+          CAPTURE_UX: '1'
+          E2E_AUTH_EMAIL: ${{ secrets.E2E_AUTH_EMAIL }}
+          E2E_AUTH_PASSWORD: ${{ secrets.E2E_AUTH_PASSWORD }}
+          E2E_SUPABASE_ANON_KEY: ${{ secrets.E2E_SUPABASE_ANON_KEY }}
+          E2E_MANAGER_EMAIL: ${{ secrets.E2E_MANAGER_EMAIL }}
+          E2E_MANAGER_PASSWORD: ${{ secrets.E2E_MANAGER_PASSWORD }}
+          E2E_READONLY_EMAIL: ${{ secrets.E2E_READONLY_EMAIL }}
+          E2E_READONLY_PASSWORD: ${{ secrets.E2E_READONLY_PASSWORD }}
+          E2E_OPERATOR_EMAIL: ${{ secrets.E2E_OPERATOR_EMAIL }}
+          E2E_OPERATOR_PASSWORD: ${{ secrets.E2E_OPERATOR_PASSWORD }}
+        run: npx playwright test --config playwright.visual.config.ts
+
+      - name: Summarise capture
+        if: always()
+        run: |
+          DIR="${UX_ARTIFACT_DIR}"
+          PNGS=$(ls "$DIR"/*.png 2>/dev/null | wc -l | tr -d ' ')
+          MANIFEST=$( [ -f "$DIR/manifest.jsonl" ] && wc -l < "$DIR/manifest.jsonl" | tr -d ' ' || echo 0 )
+          {
+            echo "## Visual UX capture"
+            echo "- target: ${E2E_BASE_URL}"
+            echo "- screenshots captured: ${PNGS}"
+            echo "- manifest entries: ${MANIFEST}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── 2. Reflect ────────────────────────────────────────────────────────────────
+      - name: Reflect on UX + file deduped tickets
+        id: reflect
+        continue-on-error: true
+        timeout-minutes: 35
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent ux-vision-reviewer
+
+      # ── Artifact (always) for human review of what the agent saw ────────────────────
+      - name: Upload visual-artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-ux-artifacts
+          path: ${{ env.UX_ARTIFACT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 14

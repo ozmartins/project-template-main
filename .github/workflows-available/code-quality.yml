@@ -1,0 +1,218 @@
+name: Code quality (nightly)
+
+# Deep, NON-GATING static analysis. Runs the slow/broad scanners that don't belong on
+# the PR critical path, records a `quality` metric to the ci-history trend (alongside the
+# test + coverage records), and lets the code-quality-reviewer agent file deduped tickets.
+# Nothing here blocks a deploy or a merge — findings are a backlog the factory burns down.
+#
+#  codeql  — CodeQL security analysis (js/ts + python) → GitHub Security tab
+#  scan    — tsc/ruff/shellcheck/hadolint/gitleaks/semgrep/trivy/npm-audit/pip-audit
+#            → quality-compute.mjs → `quality` record on ci-history
+#  review  — code-quality-reviewer agent reads the findings and files deduped tickets
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily 04:00 UTC (ahead of pipeline-daily at 06:00)
+  workflow_dispatch:
+
+concurrency:
+  group: code-quality
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  scan:
+    name: Scan + record quality metric
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write       # push the quality record to ci-history
+      security-events: read # read CodeQL alert counts for the metric
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare results dir
+        run: mkdir -p results
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      # ---- fast deterministic tools ----
+      - name: tsc --noEmit
+        continue-on-error: true
+        working-directory: frontend
+        run: npx tsc -b 2>&1 | tee ../results/tsc.txt || true
+      - name: eslint (json)
+        continue-on-error: true
+        working-directory: frontend
+        run: npx eslint . --ext .ts,.tsx -f json -o ../results/eslint.json || true
+      - name: ruff (json)
+        continue-on-error: true
+        run: |
+          pip install ruff==0.8.4 >/dev/null 2>&1 || true
+          ruff check temporal --output-format json -o results/ruff.json || true
+      - name: shellcheck (json)
+        continue-on-error: true
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          if [ "${#files[@]}" -gt 0 ]; then shellcheck -f json "${files[@]}" > results/shellcheck.json || true; else echo '[]' > results/shellcheck.json; fi
+      - name: hadolint (json)
+        continue-on-error: true
+        run: |
+          docker run --rm -i hadolint/hadolint hadolint -f json - < frontend/Dockerfile > results/hadolint.json 2>/dev/null || echo '[]' > results/hadolint.json
+      - name: gitleaks (json)
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source=/repo --no-banner --report-format json --report-path /repo/results/gitleaks.json || true
+          [ -f results/gitleaks.json ] || echo '[]' > results/gitleaks.json
+
+      # ---- deep scanners ----
+      - name: semgrep (json)
+        continue-on-error: true
+        run: |
+          pip install semgrep >/dev/null 2>&1 || true
+          semgrep scan --config p/ci --json -o results/semgrep.json . || true
+      - name: trivy fs (json)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: results/trivy.json
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: '0'
+      - name: npm audit (json)
+        continue-on-error: true
+        working-directory: frontend
+        run: npm audit --json > ../results/npm-audit.json || true
+      - name: pip-audit (json)
+        continue-on-error: true
+        run: |
+          pip install pip-audit >/dev/null 2>&1 || true
+          pip-audit -f json -o results/pip-audit.json || true
+      - name: CodeQL open alerts (count via API)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" \
+            --jq '[.[] | {rule: {security_severity_level: .rule.security_severity_level, severity: .rule.severity}}]' \
+            > results/codeql.json 2>/dev/null || echo '[]' > results/codeql.json
+
+      # ---- aggregate + record to ci-history ----
+      - name: Aggregate quality metric
+        run: |
+          node .github/scripts/quality-compute.mjs --dir results > quality-results.json
+          cat quality-results.json
+
+      - name: Upload raw findings (for the reviewer agent + humans)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-findings
+          path: |
+            results/
+            quality-results.json
+          retention-days: 14
+
+      - name: Record quality record + render, push to ci-history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH=ci-history
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          node .github/scripts/test-history-record.mjs --suite quality --format quality \
+            --results quality-results.json > new-records.jsonl
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            rm -rf hist && mkdir hist && cd hist
+            git init -q && git remote add origin "$REPO_URL"
+            if git fetch -q --depth 1 origin "$BRANCH"; then git checkout -q -b "$BRANCH" FETCH_HEAD; else git checkout -q --orphan "$BRANCH"; fi
+            cat ../new-records.jsonl >> runs.jsonl
+            node ../.github/scripts/test-history-render.mjs .
+            git add -A && git commit -q -m "ci: record quality run ${GITHUB_RUN_ID}"
+            if git push -q origin "$BRANCH"; then echo "published"; cd ..; exit 0; fi
+            echo "push rejected (attempt $attempt) — retrying"; cd ..
+          done
+          echo "failed to publish after retries" >&2; exit 1
+
+  review:
+    name: Reviewer agent → deduped tickets
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Node 22 — the Copilot SDK's bundled CLI server requires node:sqlite (Node >= 22).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+      - name: Install shared runtime
+        working-directory: .github/tools/shared
+        run: npm ci
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: quality-findings
+          path: ${{ github.workspace }}
+        continue-on-error: true
+      - name: Reviewer agent
+        continue-on-error: true
+        timeout-minutes: 25
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent code-quality-reviewer

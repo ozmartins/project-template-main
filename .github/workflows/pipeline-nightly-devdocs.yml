@@ -1,0 +1,73 @@
+name: Pipeline - Nightly Developer Docs
+
+# Nightly developer-docs coverage pipeline.
+# Runs the developer-docs-manager agent to bootstrap and maintain docs/developer/ ticket coverage.
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # nightly at 22:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-nightly-devdocs
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Nightly developer docs pipeline — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Stage | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stage — Developer Docs Manager
+        id: developer_docs_manager
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent developer-docs-manager
+
+      - name: Summarise — Developer Docs Manager
+        if: always()
+        env:
+          OUTCOME: ${{ steps.developer_docs_manager.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| developer-docs-manager | $STATUS |" >> "$GITHUB_STEP_SUMMARY"

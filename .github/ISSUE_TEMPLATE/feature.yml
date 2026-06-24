@@ -1,0 +1,100 @@
+name: Feature Request
+description: Propose a new feature or capability
+title: "feat(scope): "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Follow the [canonical issue format](../../doc_templates/ISSUE.md) — it explains what each section requires.
+        **Title:** replace `scope` with the affected module/area and complete the imperative phrase.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: >
+        One prose paragraph: what the problem is, why it matters, and what success looks like.
+        No bullet lists.
+      placeholder: "The current X does not support Y, which means Z. This ticket proposes ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: >
+        Named files (`path/to/file.ts:42`), verbatim error messages, run URLs, PR/issue numbers.
+        "The current behaviour is wrong" is not context.
+      placeholder: |
+        - `path/to/file.ts:42` — relevant code location
+        - Issue #N, PR #N — related prior work
+        - https://github.com/.../actions/runs/... — CI evidence
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-to-build
+    attributes:
+      label: What to Build
+      description: >
+        API contracts, SQL schema shapes, file trees, enumerated behaviour steps.
+        Write specifications, not intentions. A reviewer should be able to implement from this section alone.
+      placeholder: |
+        ### API contract
+        POST /api/resource
+        Request: { "field": "value" }
+        Response: { "id": "uuid", "field": "value" }
+
+        ### Database shape
+        Table `foo`: id uuid, name text, created_at timestamptz
+
+        ### Behaviour steps
+        1. User submits form → POST /api/resource
+        2. Server validates and returns 201 with resource body
+        3. UI redirects to detail view
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: >
+        Grouped checkboxes. Each item independently verifiable. Observable outcomes only —
+        not implementation steps.
+      placeholder: |
+        ### Behaviour
+        - [ ] Submitting a valid form creates the resource and redirects to the detail view
+        - [ ] The detail view shows all fields returned by the API
+
+        ### Error handling
+        - [ ] Submitting with a missing required field returns a 400 with a field-level error message
+        - [ ] Network errors surface a user-visible toast, not a blank screen
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of Scope
+      description: Adjacent things that are NOT this ticket.
+      placeholder: |
+        - Bulk-import of existing records is not part of this ticket
+        - Email notifications will be addressed in a follow-up
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation Notes
+      description: >
+        Constraining ADRs, conflicting open PRs, files to avoid, environment caveats.
+        Leave blank if none.
+      placeholder: |
+        - ADR-NNNN constrains the auth approach
+        - Avoid editing `path/to/shared.ts` — owned by open PR #N
+    validations:
+      required: false

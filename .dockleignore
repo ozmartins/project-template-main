@@ -1,0 +1,43 @@
+# .dockleignore — suppressed Dockle CIS Benchmark findings
+#
+# Format:  CIS-ID or DKL-ID
+#
+# Rules:
+#   - Document the justification inline as a comment above each suppression.
+#   - Review suppressions when base images are upgraded or when the Kubernetes
+#     health-check strategy changes.
+#
+# CIS-DI-0005: Enable Content trust for Docker
+#   Suppressed because Docker Content Trust (DCT) is not enforced in this CI
+#   environment. Image integrity is instead provided by Cosign signing
+#   (sign-images job in build-images.yml) and SLSA provenance attestation
+#   (frontend-provenance / temporal-worker-provenance jobs). Revisit if DCT is
+#   adopted as an additional layer.
+CIS-DI-0005
+
+# CIS-DI-0006: Add HEALTHCHECK instruction to the container image
+#   Suppressed because container-level HEALTHCHECK is not required in this project:
+#   health probing is delegated to Kubernetes liveness/readiness probes defined
+#   in the Helm chart deployment templates (charts/app/templates/frontend-deployment.yaml
+#   and charts/app/templates/temporal-worker-deployment.yaml). Adding a HEALTHCHECK
+#   to the Dockerfile would duplicate that logic without benefit in the Kubernetes
+#   runtime environment. Revisit if the images are deployed outside of Kubernetes
+#   (e.g. docker-compose for local dev with health checks).
+CIS-DI-0006
+
+# CIS-DI-0010: Do not store credential in environment variables/files
+#   Suppressed because this is a false positive from the official nginx:alpine base
+#   image. Dockle flags the variable KEY_SHA512 that appears in the nginx base
+#   image's RUN layer. KEY_SHA512 holds a SHA-512 hash of the nginx package
+#   signing key used to verify the integrity of the downloaded signing key
+#   (https://nginx.org/keys/nginx_signing.rsa.pub). It is a cryptographic
+#   verification hash, not a credential or secret. The nginx Docker image is an
+#   official Docker Hub image maintained by the nginx team; this pattern is
+#   intentional and well-understood. Revisit if nginx changes its key-pinning
+#   approach in a future base image release.
+CIS-DI-0010
+# DKL-DI-0006: Avoid latest tag
+#   Suppressed for local builds and scan-only tags (scan-<sha> and latest).
+#   Production deploys use immutable SHA-tagged images set by the CI pipeline.
+#   The mutable 'latest' tag is used only for local development convenience.
+DKL-DI-0006

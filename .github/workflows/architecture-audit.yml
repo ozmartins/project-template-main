@@ -1,0 +1,258 @@
+name: Audit - Architecture
+
+# Standing whole-repo audits that catch defect classes the per-PR review agents
+# structurally cannot see: cross-file wiring (Temporal registration), holistic
+# security posture (pull_request_target+secrets), and behavior-vs-existence
+# (views bypassing RLS). Report-only (non-gating) — surfaces a worklist without
+# blocking merges, mirroring the non-gating experience-suite precedent. The
+# Security Reviewer and Tech Reviewer agents consult this run's findings.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # daily 06:00 UTC
+  workflow_dispatch: {}
+  pull_request:
+    branches: [main]
+    paths:
+      - 'temporal/src/**'
+      - 'supabase/migrations/**'
+      - '.github/workflows/**'
+      - 'scripts/audit/**'
+      - 'charts/app/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Whole-repo architecture audit (report-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+
+      - name: Install audit dependencies
+        run: npm ci
+        working-directory: scripts/audit
+
+      - name: Run architecture audits
+        # Report mode: always exit 0 so this never blocks a merge. Findings are
+        # written to the job summary as the reviewers' worklist. Promote
+        # individual checks to `--strict` once their tracking issues close.
+        run: npm run audit
+        working-directory: scripts/audit
+
+  helm-best-practice-scan:
+    name: Helm best-practice scan (kube-score, report-only)
+    # Tool choice: kube-score — single static binary, no config file needed,
+    # structured output, exits non-zero on any WARNING/CRITICAL finding (useful
+    # for future gating). Chosen over polaris for simplicity and zero-config
+    # operation in CI. See ADR-0070.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        uses: azure/setup-helm@f0accbfd55e3332a28f721b8202b1016cecf90d5  # v5
+        with:
+          version: v3.18.3
+
+      - name: Install kube-score
+        run: |
+          # SHA256 from https://github.com/zegl/kube-score/releases/download/v1.20.0/checksums.txt
+          # To update: download checksums.txt from the release page and find the hash for
+          # kube-score_VERSION_linux_amd64.tar.gz, then update EXPECTED_SHA256 and the URL.
+          EXPECTED_SHA256="ff777b4b3f45905b2d22c69e93c57a7a170e61529a79d54e59cb95cca4bc2a55"
+          curl -sSfL \
+            "https://github.com/zegl/kube-score/releases/download/v1.20.0/kube-score_1.20.0_linux_amd64.tar.gz" \
+            -o /tmp/kube-score.tar.gz
+          echo "${EXPECTED_SHA256}  /tmp/kube-score.tar.gz" | sha256sum --check --strict \
+            || { echo "ERROR: SHA256 checksum verification failed for kube-score tarball. Expected: ${EXPECTED_SHA256}"; exit 1; }
+          tar -xzf /tmp/kube-score.tar.gz -C /tmp kube-score
+          sudo mv /tmp/kube-score /usr/local/bin/kube-score
+          kube-score version
+
+      - name: Render charts and run kube-score
+        id: scan
+        # kube-score-baseline: expected 0 CRITICAL findings with stock chart defaults.
+        # WARNING findings (e.g. missing NetworkPolicy) are expected and tracked separately.
+        run: |
+          set -euo pipefail
+          CRITICAL_TOTAL=0
+
+          {
+            echo "## Helm best-practice scan (kube-score v1.20.0)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Scan the three value profiles shipped with the chart. Update this list
+          # when new per-environment profiles (e.g. values-staging.yaml) are added.
+          for entry in "base:values.yaml" "dev:values-dev.yaml" "test:values-test.yaml"; do
+            LABEL="${entry%%:*}"
+            PROFILE="${entry##*:}"
+
+            echo "::group::kube-score — ${LABEL} profile"
+
+            helm template ci-audit charts/app \
+              --values "charts/app/${PROFILE}" \
+              > "/tmp/manifests-${LABEL}.yaml"
+
+            SCORE_FILE="/tmp/score-${LABEL}.txt"
+            # kube-score exits non-zero on WARNING or CRITICAL; capture output regardless
+            kube-score score "/tmp/manifests-${LABEL}.yaml" > "${SCORE_FILE}" 2>&1 || true
+
+            CRIT=$(grep -c '\[CRITICAL\]' "${SCORE_FILE}" || true)
+            WARN=$(grep -c '\[WARNING\]' "${SCORE_FILE}" || true)
+
+            if [ "${CRIT:-0}" -gt 0 ]; then
+              STATUS="🚨 ${CRIT} CRITICAL, ${WARN} WARNING finding(s)"
+              CRITICAL_TOTAL=$((CRITICAL_TOTAL + CRIT))
+            elif [ "${WARN:-0}" -gt 0 ]; then
+              STATUS="⚠️ ${WARN} WARNING finding(s) — 0 CRITICAL"
+            else
+              STATUS="✅ No findings"
+            fi
+
+            {
+              echo "### Profile: \`${LABEL}\` — ${STATUS}"
+              echo '```'
+              cat "${SCORE_FILE}"
+              echo '```'
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::endgroup::"
+          done
+
+          echo "critical_count=${CRITICAL_TOTAL}" >> "$GITHUB_OUTPUT"
+
+      - name: File issue on CRITICAL findings
+        if: fromJSON(steps.scan.outputs.critical_count || '0') > 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TITLE="[kube-score] CRITICAL Helm best-practice findings detected"
+          # Deduplicate: skip if an open issue with this title already exists
+          EXISTING=$(gh issue list --state open --label "queue:platform" \
+            --json title --jq ".[] | select(.title == \"${TITLE}\") | .title" \
+            | head -1 || true)
+          if [ -n "${EXISTING}" ]; then
+            echo "Duplicate issue already open — skipping creation."
+            exit 0
+          fi
+          {
+            echo 'kube-score found **CRITICAL** Helm best-practice findings in the architecture-audit scan.'
+            echo ''
+            echo "See the workflow run for details: ${RUN_URL}"
+            echo ''
+            echo "Triggered by: \`${GITHUB_REF}\` @ \`${GITHUB_SHA}\`"
+            echo ''
+            echo 'Resolve the findings reported in the step summary, then re-run the scan to confirm.'
+          } > /tmp/issue-body.md
+          gh issue create \
+            --title "${TITLE}" \
+            --label "queue:platform" \
+            --label "priority:high" \
+            --body-file /tmp/issue-body.md \
+            || echo "Issue creation failed (labels may not exist) — see step summary for findings."
+
+      - name: Auto-close kube-score incident on clean scan
+        # ADR-0122: when the scan is clean, close any open incident so the issue
+        # tracker reflects the current state without requiring manual triage.
+        # Searches by title only (no label filter) so incidents that have been
+        # re-labelled from queue:platform to queue:development are still found.
+        if: fromJSON(steps.scan.outputs.critical_count || '0') == 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="[kube-score] CRITICAL Helm best-practice findings detected"
+          # Fetch issue numbers separately so a gh API failure produces an empty
+          # string (via fallback) rather than masking the error inside a pipeline.
+          ISSUE_NUMBERS=$(gh issue list --state open \
+            --json number,title \
+            --jq '.[] | select(.title == $title) | .number' \
+            --arg title "${TITLE}" \
+            || echo "")
+          OPEN_NUMBER=$(echo "${ISSUE_NUMBERS}" | head -1)
+          if [ -z "${OPEN_NUMBER}" ]; then
+            echo "No open kube-score incident found — nothing to close."
+            exit 0
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue close "${OPEN_NUMBER}" \
+            --comment "kube-score scan is now clean: 0 CRITICAL findings across all scanned profiles. Closing incident. Confirmed by run: ${RUN_URL}" \
+            || echo "Failed to close issue ${OPEN_NUMBER} — it may already be closed or the close operation failed."
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [audit, helm-best-practice-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: architecture-audit
+          WORKFLOW_CATEGORY: audit
+          WORKFLOW_ENV:
+          WORKFLOW_CLOUD:
+          WORKFLOW_METRICS: '{"finding_count": 0}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

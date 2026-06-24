@@ -1,0 +1,80 @@
+name: Pipeline - Weekly
+
+# Staged cadence pipeline per ADR-0076.
+# Runs every Monday at 09:00 UTC for lower-frequency, synthesis-oriented sweeps.
+#
+# Stage order:
+#   1. personas-curator  — builds and maintains living persona documents under docs/personas/
+#
+# Each stage is an independent GitHub Actions step with continue-on-error: true and
+# a per-stage timeout so a failing/hung stage never blocks the next one.
+# Stage outcome is appended to $GITHUB_STEP_SUMMARY.
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # weekly on Monday at 09:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-weekly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Weekly pipeline — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Stage | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 1: Personas Curator ──────────────────────────────────────────────
+      - name: Stage — Personas Curator
+        id: personas_curator
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent personas-curator
+
+      - name: Summarise — Personas Curator
+        if: always()
+        env:
+          OUTCOME: ${{ steps.personas_curator.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| personas-curator | $STATUS |" >> "$GITHUB_STEP_SUMMARY"

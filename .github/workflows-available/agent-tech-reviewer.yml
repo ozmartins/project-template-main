@@ -1,0 +1,48 @@
+name: Agent — Tech Reviewer
+
+# Event-driven trigger: run review immediately when PR CI completes.
+# Keep cron + manual dispatch as backstops in case workflow_run delivery is delayed.
+on:
+  workflow_run:
+    workflows: ["CICD - Build Images"]
+    types: [completed]
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# Serialise sweeps: every "CICD - Build Images" completion fires this workflow, so a
+# CI wave (e.g. the queue-wide re-trigger pre-pass) spawned 44 parallel runs in
+# 90 min and tripped SDK-token rate limits (23% failed with 401). One running +
+# one queued sweep is the correct coalescing — a sweep reviews the whole
+# queue:review set anyway, so per-event fan-out adds nothing but load.
+concurrency:
+  group: agent-tech-reviewer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  tech-reviewer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Run tech reviewer
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+        run: npx tsx src/run-agent.ts --agent tech-reviewer

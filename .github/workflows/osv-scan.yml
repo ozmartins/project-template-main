@@ -1,0 +1,96 @@
+name: PR - OSV Dependency Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  osv-scan:
+    name: OSV scan (diff-only HIGH/CRITICAL)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout base branch
+        run: git checkout "${{ github.event.pull_request.base.sha }}"
+
+      - name: Scan base lockfiles (HIGH/CRITICAL only)
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --lockfile=frontend/package-lock.json
+            --lockfile=temporal/package-lock.json
+            --severity=HIGH,CRITICAL
+            --format=json
+            --output=osv-base.json
+
+      - name: Checkout PR head
+        run: git checkout "${{ github.sha }}"
+
+      - name: Scan PR lockfiles (HIGH/CRITICAL only)
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --lockfile=frontend/package-lock.json
+            --lockfile=temporal/package-lock.json
+            --severity=HIGH,CRITICAL
+            --format=json
+            --output=osv-pr.json
+
+      - name: Compare base vs PR and generate SARIF
+        id: compare
+        uses: google/osv-scanner-action/osv-reporter-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --old=osv-base.json
+            --new=osv-pr.json
+            --output=osv-results.sarif
+            --gh-annotations=true
+            --fail-on-vuln=true
+
+      - name: Write OSV summary
+        if: always()
+        run: |
+          set -euo pipefail
+          extract_ids() {
+            local file="$1"
+            if [ ! -f "$file" ]; then
+              return 0
+            fi
+            jq -r '.results[]?.packages[]?.vulnerabilities[]?.id // empty' "$file" | sort -u
+          }
+
+          extract_ids osv-base.json > /tmp/osv-base-ids.txt
+          extract_ids osv-pr.json > /tmp/osv-pr-ids.txt
+
+          base_count="$(wc -l < /tmp/osv-base-ids.txt | tr -d ' ')"
+          pr_count="$(wc -l < /tmp/osv-pr-ids.txt | tr -d ' ')"
+          new_count="$(comm -13 /tmp/osv-base-ids.txt /tmp/osv-pr-ids.txt | wc -l | tr -d ' ')"
+
+          {
+            echo "## OSV dependency scan (HIGH/CRITICAL)"
+            echo ""
+            echo "| Scope | Vulnerability count |"
+            echo "|---|---:|"
+            echo "| Base branch | ${base_count} |"
+            echo "| PR branch | ${pr_count} |"
+            echo "| Newly introduced in PR | ${new_count} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: osv-scan-sarif
+          path: osv-results.sarif
+          if-no-files-found: warn
+          retention-days: 7

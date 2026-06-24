@@ -1,0 +1,248 @@
+name: Audit - Azure Security Benchmark
+
+# Nightly Azure security audit using Prowler (Apache 2.0) and Microsoft Defender
+# for Cloud (free tier). Runs on the self-hosted cluster runner (which has Azure CLI
+# credentials). Findings are written to JSON, then the audit-findings-triage Copilot
+# agent files/updates GitHub issues for all FAIL results, deduplicating against
+# existing open issues before creating new ones.
+#
+# Prowler: https://github.com/prowler-cloud/prowler (Apache 2.0)
+# Runs ~300 CIS Azure Benchmark checks across IAM, storage, networking, monitoring.
+#
+# Azure Defender: az security assessment list — queries the free-tier Defender
+# recommendations that surface immediately without paying for Defender plans.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC nightly (offset from kube-bench at 03:00)
+  workflow_dispatch:
+    inputs:
+      severity_threshold:
+        description: 'Minimum Prowler severity to file issues (critical/high/medium/low)'
+        required: false
+        default: 'medium'
+        type: choice
+        options: [critical, high, medium, low]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: audit-azure-security
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  prowler:
+    name: Prowler — CIS Azure Benchmark
+    runs-on: [self-hosted, linux, x64, factory-cluster-guardian]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Check Azure CLI authentication
+        id: az_check
+        run: |
+          if ! az account show >/dev/null 2>&1; then
+            echo "::warning::Azure CLI not authenticated — skipping Prowler run"
+            echo "AZ_AUTH=false" >> "$GITHUB_ENV"
+          else
+            echo "AZ_AUTH=true" >> "$GITHUB_ENV"
+            SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+            echo "SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Prowler
+        if: env.AZ_AUTH == 'true'
+        run: |
+          if ! command -v prowler &>/dev/null; then
+            pip install prowler --quiet
+          fi
+          prowler --version
+
+      - name: Run Prowler CIS Azure benchmark
+        if: env.AZ_AUTH == 'true'
+        env:
+          AUDIT_SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'medium' }}
+        run: |
+          mkdir -p /tmp/audit
+
+          # Run Prowler with JSON output. CIS Azure Benchmark compliance framework.
+          # --subscription filters to the current subscription.
+          # --output-formats json — machine-readable for the triage agent.
+          # --no-banner / --quiet suppress interactive output in CI.
+          prowler azure \
+            --subscription-ids "$SUBSCRIPTION_ID" \
+            --compliance cis_azure_2.0 \
+            --output-formats json \
+            --output-directory /tmp/audit \
+            --output-filename prowler-azure \
+            --severity "${AUDIT_SEVERITY_THRESHOLD}" \
+            --status FAIL \
+            --no-banner \
+            --quiet || true   # prowler exits non-zero when there are findings; don't fail the step
+
+          # Prowler writes <name>_<timestamp>.json — normalise the name
+          find /tmp/audit -name 'prowler-azure*.json' -newer /tmp/audit \
+            -exec cp {} /tmp/audit/prowler-azure.json \; 2>/dev/null || true
+
+          echo "Prowler output lines: $(wc -l < /tmp/audit/prowler-azure.json)"
+
+      - name: Run Azure Defender assessment
+        if: env.AZ_AUTH == 'true'
+        run: |
+          # Pull free-tier Defender for Cloud recommendations (Unhealthy = actionable)
+          az security assessment list \
+            --subscription "$SUBSCRIPTION_ID" \
+            --output json 2>/dev/null | \
+            jq '[.[] | select(.status.code == "Unhealthy")]' \
+            > /tmp/audit/defender-assessments.json
+
+          echo "Unhealthy Defender assessments: $(jq 'length' /tmp/audit/defender-assessments.json)"
+
+      - name: Upload audit results
+        if: env.AZ_AUTH == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: azure-audit-results-${{ github.run_id }}
+          path: /tmp/audit/
+          retention-days: 30
+
+      - name: Summarise raw findings
+        if: env.AZ_AUTH == 'true'
+        run: |
+          {
+            echo "## Azure Security Audit — $(date -u '+%Y-%m-%d')"
+            echo ""
+            echo "### Prowler CIS Azure 2.0"
+            echo ""
+            echo "| Severity | Count |"
+            echo "|----------|-------|"
+            jq -r '[.[].Severity] | group_by(.) | .[] | "\(.[0]) | \(length)"' \
+              /tmp/audit/prowler-azure.json 2>/dev/null | \
+              awk -F'|' '{print "| " $1 " | " $2 " |"}' || echo "| (parse error) | — |"
+            echo ""
+            echo "### Azure Defender for Cloud (Unhealthy)"
+            echo ""
+            DEFENDER_COUNT=$(jq 'length' /tmp/audit/defender-assessments.json 2>/dev/null || echo "?")
+            echo "Unhealthy assessments: **$DEFENDER_COUNT**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Triage agent — Prowler findings ──────────────────────────────────────
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        if: env.AZ_AUTH == 'true'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        if: env.AZ_AUTH == 'true'
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Triage Prowler findings → GitHub issues
+        if: env.AZ_AUTH == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          AUDIT_SOURCE: azure-prowler
+          AUDIT_JSON_PATH: /tmp/audit/prowler-azure.json
+          AUDIT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUDIT_SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'medium' }}
+          AUDIT_BASELINE_PATH: ${{ github.workspace }}/deploy/audit/azure-baseline.json
+        run: npx tsx src/run-agent.ts --agent audit-findings-triage
+
+      - name: Triage Defender findings → GitHub issues
+        if: env.AZ_AUTH == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          AUDIT_SOURCE: azure-defender
+          AUDIT_JSON_PATH: /tmp/audit/defender-assessments.json
+          AUDIT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUDIT_SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'medium' }}
+          AUDIT_BASELINE_PATH: ${{ github.workspace }}/deploy/audit/azure-baseline.json
+        run: npx tsx src/run-agent.ts --agent audit-findings-triage
+
+      - name: Azure not authenticated — skip
+        if: env.AZ_AUTH == 'false'
+        run: |
+          echo "## ⚠️ Azure CLI not authenticated" >> "$GITHUB_STEP_SUMMARY"
+          echo "Prowler and Defender audit skipped — self-hosted runner Azure CLI credentials not available." >> "$GITHUB_STEP_SUMMARY"
+          echo "Configure a Service Principal or Managed Identity on the runner to enable this workflow." >> "$GITHUB_STEP_SUMMARY"
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [prowler]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: audit-azure-security
+          WORKFLOW_CATEGORY: security
+          WORKFLOW_ENV:
+          WORKFLOW_CLOUD:
+          WORKFLOW_METRICS: '{"finding_count": 0}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

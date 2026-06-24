@@ -1,0 +1,14 @@
+# .trivyignore — suppressed Trivy CVE findings
+#
+# Format:
+#   CVE-YYYY-NNNNN  reason: <justification>; revisit: YYYY-MM-DD
+#
+# Rules:
+#   - Every entry MUST include a brief justification and an expiry / revisit date.
+#   - Remove entries once the CVE is fixed upstream or the revisit date has passed
+#     and the risk has been re-evaluated.
+#   - Only suppress findings that are genuinely not exploitable in this threat model
+#     (e.g. the vulnerable code path is not reachable) or that have a tracked
+#     upstream fix expected before the expiry date.
+#
+# No suppressions are currently active. Add them here as needed.

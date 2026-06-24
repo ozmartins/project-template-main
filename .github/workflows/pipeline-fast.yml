@@ -1,0 +1,321 @@
+name: Pipeline - Fast
+
+# Staged cadence pipeline per ADR-0025.
+# Runs a SINGLE pass per scheduled invocation (one triage → review → merge sweep).
+#
+# TIMER-ONLY DESIGN (2026-06-08): The `workflow_run` trigger was intentionally removed.
+# It caused 69% self-cancellation thrash (PR #657). Shorten the cron interval to improve
+# responsiveness rather than reintroducing event-driven triggers. See issue #704.
+#
+# Stage order (one pass per run):
+#   1. Stale re-kick      — unassign+reassign all ghost-assigned Copilot issues (no LLM,
+#                           pure TypeScript). Runs FIRST so sessions start immediately.
+#   2. PR Handler (loop)  — one fresh session per open PR, oldest-first:
+#                           review → approve/request-changes → merge. Clears the backlog
+#                           so all downstream stages see accurate post-merge state.
+#   3. Product Owner      — label/triage new issues, repair board hierarchy.
+#   4. Project Manager    — assign new ready-for-dev work to fill real capacity gap.
+#   5. DB Steward         — conditional: only when needs-database-review issues/PRs exist
+#   6. Security Reviewer  — conditional: only when needs-security-review issues/PRs exist
+#   7. Platform Engineer  — conditional: only when needs-platform-review issues/PRs exist
+#
+# Each stage is a separate named step. continue-on-error: true means one stuck/failing
+# stage never blocks the rest. Outcomes go to $GITHUB_STEP_SUMMARY.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every ~15 min (single pass); GitHub may run it less often under load
+  workflow_dispatch:
+
+concurrency:
+  # Single serialising group — timer-only trigger means no cross-branch storms.
+  # cancel-in-progress: false so scheduled runs queue behind an in-flight pass
+  # rather than cancelling it.
+  group: pipeline-fast
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Shared env block for all agent steps — avoids repetition.
+  # Individual steps may override or extend.
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    # Hard self-terminate: Stage1(6) + Stage2a(22) + Stage2b(20) + specialists(18) + headroom.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Fast pipeline — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Stage | Agent | Status |"
+            echo "|-------|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 1: Stale re-kick — unassign+reassign all ghost-assigned issues ──
+      # Pure TypeScript (no LLM) — fast and deterministic. Processes all stale
+      # issues in one pass so Copilot sessions start immediately.
+      - name: Stage 1 — Stale re-kick (re-trigger ghost-assigned Copilot issues)
+        id: stale_rekick
+        continue-on-error: true
+        timeout-minutes: 20
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          REKICK_ONLY: 'true'
+        run: npx tsx src/run-assignment.ts
+
+      - name: Summarise — Stale re-kick
+        if: always()
+        env:
+          OUTCOME: ${{ steps.stale_rekick.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 1 — stale re-kick | run-assignment (code) | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 1b: Conflict refresh scan — detect CONFLICTING Copilot PRs ────────
+      # Pure TypeScript (no LLM). Scans all open Copilot PRs for CONFLICTING
+      # mergeable state and records which PRs need a conflict nudge to the step
+      # summary. The actual nudge is handled by the PR Handler loop below
+      # (CONFLICTING PRs are priority-1 work in that loop). Running the scan BEFORE
+      # the handler ensures the detection record exists even when the handler loop
+      # runs out of budget. See ADR-0113.
+      - name: Stage 1b — Conflict refresh scan (detect CONFLICTING Copilot PRs)
+        id: conflict_scan
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: .github/tools/shared
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+        run: npx tsx src/scan-conflict-refresh.ts
+
+      - name: Summarise — Conflict refresh scan
+        if: always()
+        env:
+          OUTCOME: ${{ steps.conflict_scan.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 1b — conflict refresh scan | scan-conflict-refresh (code) | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 2: PR Handler loop — one session per open PR, oldest-first ─────
+      # Clears the PR backlog first so all downstream stages see accurate
+      # post-merge state. Each PR gets a fresh focused session with its own timeout.
+      - name: Stage 2 — PR Handler (per-PR review + merge loop)
+        id: pr_pipeline
+        continue-on-error: true
+        timeout-minutes: 22
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          PR_PIPELINE_BUDGET_MIN: '22'
+          PR_HANDLER_TIMEOUT_MIN: '5'
+        run: npx tsx src/run-pr-pipeline.ts
+
+      - name: Summarise — PR Handler loop
+        if: always()
+        env:
+          OUTCOME: ${{ steps.pr_pipeline.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 2 — PR review + merge | pr-handler (per-PR loop) | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 3: Product Owner — triage + board grooming ──────────────────────
+      # Runs after PR handler so it sees accurate post-merge board state.
+      - name: Stage 3 — Product Owner (triage + board)
+        id: product_owner
+        continue-on-error: true
+        timeout-minutes: 6
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent product-owner
+
+      - name: Summarise — Product Owner
+        if: always()
+        env:
+          OUTCOME: ${{ steps.product_owner.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 3 — triage + board | product-owner | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 4: Project Manager — stale cleanup + new assignment ────────────
+      # Dedicated step so assignment always gets its own budget. Runs whether or not Stage 2 succeeded.
+      # Runs after PR handler so the capacity gap reflects real post-merge state.
+      - name: Stage 4 — Project Manager (assign new work)
+        id: assignment
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+          ASSIGN_TIMEOUT_MIN: '7'
+        run: npx tsx src/run-assignment.ts
+
+      - name: Summarise — Project Manager
+        if: always()
+        env:
+          OUTCOME: ${{ steps.assignment.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 4 — stale cleanup + assign | project-manager | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 5: DB Steward — conditional on database-review work ─────────────
+      - name: Check — database review work exists
+        id: db_check
+        if: always()
+        run: |
+          COUNT=$(gh pr list --label "needs-database-review" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          COUNT2=$(gh issue list --label "queue:database" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          echo "exists=$(( COUNT + COUNT2 > 0 ))" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+
+      - name: Stage 5 — DB Steward (database review)
+        id: db_steward
+        if: always() && steps.db_check.outputs.exists == '1'
+        continue-on-error: true
+        timeout-minutes: 6
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent database-steward
+
+      - name: Summarise — DB Steward
+        if: always() && steps.db_check.outputs.exists == '1'
+        env:
+          OUTCOME: ${{ steps.db_steward.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 5 — database review | database-steward | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 6: Security Reviewer — conditional on security-review work ───────
+      - name: Check — security review work exists
+        id: sec_check
+        if: always()
+        run: |
+          COUNT=$(gh pr list --label "needs-security-review" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          COUNT2=$(gh issue list --label "queue:security" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          echo "exists=$(( COUNT + COUNT2 > 0 ))" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+
+      - name: Stage 6 — Security Reviewer (security review)
+        id: security_reviewer
+        if: always() && steps.sec_check.outputs.exists == '1'
+        continue-on-error: true
+        timeout-minutes: 6
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent security-reviewer
+
+      - name: Summarise — Security Reviewer
+        if: always() && steps.sec_check.outputs.exists == '1'
+        env:
+          OUTCOME: ${{ steps.security_reviewer.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 6 — security review | security-reviewer | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 7: Platform Engineer — conditional on platform-review work ───────
+      - name: Check — platform review work exists
+        id: platform_check
+        if: always()
+        run: |
+          COUNT=$(gh pr list --label "needs-platform-review" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          COUNT2=$(gh issue list --label "queue:platform" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          echo "exists=$(( COUNT + COUNT2 > 0 ))" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+
+      - name: Stage 7 — Platform Engineer (platform review)
+        id: platform_engineer
+        if: always() && steps.platform_check.outputs.exists == '1'
+        continue-on-error: true
+        timeout-minutes: 6
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROJECT_MANAGER_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent platform-engineer
+
+      - name: Summarise — Platform Engineer
+        if: always() && steps.platform_check.outputs.exists == '1'
+        env:
+          OUTCOME: ${{ steps.platform_engineer.outcome }}
+        run: |
+          STATUS="✅ ok"; [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| 7 — platform review | platform-engineer | $STATUS |" >> "$GITHUB_STEP_SUMMARY"

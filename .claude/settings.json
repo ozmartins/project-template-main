@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm list *)",
+      "Bash(az account show *)",
+      "Bash(az account list *)",
+      "Bash(az graph query *)",
+      "Bash(kubectl config current-context)"
+    ]
+  }
+}

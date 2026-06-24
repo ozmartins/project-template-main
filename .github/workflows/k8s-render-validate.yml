@@ -1,0 +1,65 @@
+name: Validate - K8s Render
+
+# Phase 2 (#46): render-only validation of the Helm chart + k8s manifests.
+# Contacts NO live cluster — pure CI. Runs the chart's lint/template suite for
+# every env profile and schema-validates rendered output + bootstrap manifests.
+
+on:
+  pull_request:
+    paths:
+      - 'charts/**'
+      - 'deploy/k8s/**'
+      - '.github/workflows/k8s-render-validate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'charts/**'
+      - 'deploy/k8s/**'
+
+permissions:
+  contents: read
+
+jobs:
+  render-validate:
+    name: Render & schema-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install helm
+        uses: azure/setup-helm@f0accbfd55e3332a28f721b8202b1016cecf90d5  # v5
+        with:
+          version: v3.18.3
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo mv /tmp/kubeconform /usr/local/bin/
+
+      - name: Helm lint + template (base/dev/test/prod)
+        run: bash charts/app/ci-test.sh
+
+      - name: Schema-validate rendered chart per profile
+        run: |
+          set -euo pipefail
+          for profile in values.yaml values-dev.yaml values-test.yaml values-prod.yaml; do
+            echo "::group::kubeconform — $profile"
+            helm template rental-app charts/app -f "charts/app/$profile" \
+              | kubeconform -strict -summary -ignore-missing-schemas
+            echo "::endgroup::"
+          done
+
+      - name: Schema-validate bootstrap manifests
+        run: |
+          set -euo pipefail
+          if compgen -G "deploy/k8s/*.yaml" > /dev/null; then
+            kubeconform -strict -summary -ignore-missing-schemas deploy/k8s/*.yaml
+          else
+            echo "No deploy/k8s manifests to validate."
+          fi
+
+      - name: Summary
+        if: always()
+        run: echo "## K8s render & validate complete (chart + manifests, render-only — no cluster contact)" >> "$GITHUB_STEP_SUMMARY"

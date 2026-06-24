@@ -1,0 +1,371 @@
+name: PR - Enrichment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: pr-enrichment-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime deps
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Render DSL definition change summary comment
+        id: dsl_comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}/files?per_page=100" --paginate > /tmp/pr-files.json
+          npx --prefix .github/tools/shared tsx .github/tools/shared/src/render-dsl-definition-comment.ts \
+            --files /tmp/pr-files.json \
+            --workspace "${GITHUB_WORKSPACE}" > /tmp/dsl-definition-changes.md
+          if [ -s /tmp/dsl-definition-changes.md ]; then
+            echo "has_comment=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_comment=false" >> "$GITHUB_OUTPUT"
+          fi
+          COMMENT_ID="$(
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments?per_page=100" --paginate \
+              --jq '.[] | select(.body | contains("<!-- dsl-definition-changes -->")) | .id' | tail -n 1
+          )"
+          if [ -n "$COMMENT_ID" ]; then
+            echo "comment_id=$COMMENT_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post or update DSL definition summary
+        if: steps.dsl_comment.outputs.has_comment == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMENT_ID="${{ steps.dsl_comment.outputs.comment_id }}"
+          if [ -n "$COMMENT_ID" ]; then
+            jq -Rs '{body: .}' /tmp/dsl-definition-changes.md > /tmp/dsl-definition-comment-payload.json
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" \
+              --method PATCH \
+              --input /tmp/dsl-definition-comment-payload.json > /dev/null
+          else
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/dsl-definition-changes.md
+          fi
+
+      - name: Delete stale DSL definition summary
+        if: steps.dsl_comment.outputs.has_comment == 'false' && steps.dsl_comment.outputs.comment_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${{ steps.dsl_comment.outputs.comment_id }}" \
+            --method DELETE > /dev/null
+
+      - name: Analyse changed paths and apply labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pr = context.payload.pull_request;
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const paths = files.map(f => f.filename);
+            const labelsToAdd = new Set();
+            const labelsToRemove = new Set();
+
+            // CURRENT labels (fetched fresh — the event payload can be stale across
+            // pipeline passes). Used to avoid re-opening a specialist lane that a
+            // reviewer already cleared, which otherwise thrashes the lane on every
+            // run and permanently blocks merge (the reviewer removes needs-X-review +
+            // adds X-reviewed; enrichment must NOT undo that on the next commit/pass).
+            const { data: currentLabelObjs } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
+            const hasLabel = (n) => currentLabelObjs.some(l => l.name === n);
+            const LINKED_ISSUE_PATTERN = /\b(?:close(?:s|d)?|fix(?:e[sd])?|resolve(?:s|d)?)\s+#(\d+)\b/gi;
+
+            function extractMarkdownSection(markdown, heading) {
+              if (!markdown) return '';
+              const lines = markdown.split(/\r?\n/);
+              const wanted = heading.toLowerCase();
+              const sectionLines = [];
+              let capture = false;
+              for (const rawLine of lines) {
+                const line = rawLine.trim();
+                const headingMatch = line.match(/^##\s+(.+)$/);
+                if (headingMatch) {
+                  if (capture) break;
+                  capture = headingMatch[1].trim().toLowerCase() === wanted;
+                  continue;
+                }
+                if (capture) {
+                  sectionLines.push(rawLine);
+                }
+              }
+              return sectionLines.join('\n').trim();
+            }
+
+            function issueScopeDeclaration(title, body) {
+              return [
+                title || '',
+                extractMarkdownSection(body, 'Scope'),
+                extractMarkdownSection(body, 'Constraints'),
+                extractMarkdownSection(body, 'Interfaces'),
+              ].filter(Boolean).join('\n').toLowerCase();
+            }
+
+            function classifyDeclaredSurfaces(title, body) {
+              const declaration = issueScopeDeclaration(title, body);
+              const surfaces = new Set();
+              const addIfMatched = (surface, patterns) => {
+                if (patterns.some(pattern => declaration.includes(pattern))) {
+                  surfaces.add(surface);
+                }
+              };
+
+              addIfMatched('frontend', [
+                'frontend/',
+                ' frontend',
+                'frontend ',
+                'ui',
+                'screen',
+                'route',
+                'component',
+                'react',
+                'tanstack',
+              ]);
+              addIfMatched('temporal', [
+                'temporal/',
+                ' temporal',
+                'temporal ',
+                'worker',
+                'workflow orchestration',
+                'activity',
+                'task queue',
+              ]);
+              addIfMatched('supabase', [
+                'supabase/',
+                ' supabase',
+                'supabase ',
+                'migration',
+                'seed.sql',
+                'rls',
+                'postgres',
+                'sql',
+              ]);
+              addIfMatched('platform', [
+                '.github/',
+                '.github',
+                'github actions',
+                'control plane',
+                'project manager',
+                'tech reviewer',
+                'pr enrichment',
+                'merge gate',
+                'shared runtime',
+                'factory',
+                'charts/',
+                'deploy/',
+                'runner',
+                'copilot-instructions',
+              ]);
+              return [...surfaces];
+            }
+
+            function classifyChangedSurfaces(filePaths) {
+              const surfaces = new Set();
+              for (const path of filePaths) {
+                if (path.startsWith('frontend/')) {
+                  surfaces.add('frontend');
+                } else if (path.startsWith('temporal/')) {
+                  surfaces.add('temporal');
+                } else if (path.startsWith('supabase/')) {
+                  surfaces.add('supabase');
+                } else if (
+                  path.startsWith('.github/') ||
+                  path.startsWith('charts/') ||
+                  path.startsWith('deploy/') ||
+                  path.startsWith('scripts/')
+                ) {
+                  surfaces.add('platform');
+                }
+              }
+              return [...surfaces];
+            }
+
+            function linkedIssueNumbers(body) {
+              const numbers = new Set();
+              for (const match of (body || '').matchAll(LINKED_ISSUE_PATTERN)) {
+                numbers.add(Number(match[1]));
+              }
+              return [...numbers];
+            }
+
+            const linkedIssues = [];
+            for (const issueNumber of linkedIssueNumbers(pr.body)) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                linkedIssues.push(issue);
+              } catch (error) {
+                console.log(`Unable to load linked issue #${issueNumber}: ${error.message}`);
+              }
+            }
+
+            const declaredSurfaces = new Set(
+              linkedIssues.flatMap(issue => classifyDeclaredSurfaces(issue.title, issue.body))
+            );
+            const changedSurfaces = classifyChangedSurfaces(paths);
+            const anomalousSurfaces = changedSurfaces.filter(surface => !declaredSurfaces.has(surface));
+            const scopeAnomaly =
+              linkedIssues.length > 0 &&
+              declaredSurfaces.size > 0 &&
+              anomalousSurfaces.length > 0;
+
+            // Risk assessment
+            const highRiskPaths = ['.github/workflows/', 'supabase/migrations/', 'supabase/seed.sql', 'temporal/'];
+            const isHighRisk = paths.some(p => highRiskPaths.some(h => p.startsWith(h)));
+            const isMediumRisk = paths.some(p =>
+              p.startsWith('temporal/') || p.startsWith('supabase/') || p.startsWith('frontend/src/engine/')
+            );
+
+            if (isHighRisk) {
+              labelsToAdd.add('risk:high');
+              labelsToRemove.add('risk:low');
+              labelsToRemove.add('risk:medium');
+            } else if (isMediumRisk) {
+              labelsToAdd.add('risk:medium');
+              labelsToRemove.add('risk:low');
+              labelsToRemove.add('risk:high');
+            } else {
+              labelsToAdd.add('risk:low');
+              labelsToRemove.add('risk:medium');
+              labelsToRemove.add('risk:high');
+            }
+
+            // Specialist review lanes. Only OPEN a lane that isn't already cleared —
+            // never strip an existing `*-reviewed` clear (that re-thrashes the lane).
+            if (paths.some(p => p.startsWith('supabase/migrations/') || p === 'supabase/seed.sql') && !hasLabel('database-reviewed')) {
+              labelsToAdd.add('needs-database-review');
+            }
+
+            // needs-platform-review = platform lane routing for workflow/agent/runtime,
+            // chart, and deploy-path changes. Platform Engineer resolves this lane by
+            // removing needs-platform-review and adding platform-reviewed.
+            if (!hasLabel('platform-reviewed') && paths.some(p =>
+              p.startsWith('.github/workflows/') ||
+              p.startsWith('.github/agents/') ||
+              p.startsWith('.github/tools/') ||
+              p.startsWith('charts/') ||
+              p.startsWith('deploy/')
+            )) {
+              labelsToAdd.add('needs-platform-review');
+            }
+
+            // NOTE: The `requires-maintainer-review` HARD human gate was removed
+            // 2026-06-07 at the owner's direction — it kept stalling the factory's
+            // own self-improvement PRs (workflow/agent/secrets changes, and any PR
+            // flagged as a scope anomaly) for hours waiting on a human, and it even
+            // blocked CI re-kicks (action_required / cancelled) so those PRs could
+            // never converge. The factory now merges autonomously: Tech Reviewer
+            // approves in-scope, CI-passing PRs and the PM merges them.
+            //
+            // Scope-anomaly *detection* is retained below (it still surfaces a
+            // warning in the enrichment comment so reviewers can see over-scoped
+            // PRs — issue #79), but it no longer hard-gates on a human.
+
+            // Tests missing check
+            const hasImplChanges = paths.some(p =>
+              (p.startsWith('frontend/src/') || p.startsWith('temporal/src/')) && !p.includes('test') && !p.includes('spec')
+            );
+            const hasTestChanges = paths.some(p => p.includes('.test.') || p.includes('.spec.') || p.startsWith('temporal/tests/'));
+            if (hasImplChanges && !hasTestChanges) {
+              labelsToAdd.add('needs-tests');
+            }
+
+            // Apply labels (diff against the freshly-fetched current labels)
+            const existingLabels = currentLabelObjs.map(l => l.name);
+            const toAdd = [...labelsToAdd].filter(l => !existingLabels.includes(l));
+            const toRemove = [...labelsToRemove].filter(l => existingLabels.includes(l));
+
+            if (toAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: toAdd,
+              });
+            }
+            for (const label of toRemove) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: label,
+                });
+              } catch (_) { /* label may not exist */ }
+            }
+
+            // Step summary
+            const summary = [
+              '## PR Enrichment',
+              '',
+              `**Risk:** ${isHighRisk ? '🔴 High' : isMediumRisk ? '🟡 Medium' : '🟢 Low'}`,
+              `**Linked issues:** ${linkedIssues.length > 0 ? linkedIssues.map(issue => `#${issue.number}`).join(', ') : 'none detected'}`,
+              `**Declared issue scope:** ${declaredSurfaces.size > 0 ? [...declaredSurfaces].join(', ') : 'not classified'}`,
+              `**Changed surfaces:** ${changedSurfaces.length > 0 ? changedSurfaces.join(', ') : 'none'}`,
+              `**Scope check:** ${
+                linkedIssues.length === 0
+                  ? 'not evaluated (no linked issue detected)'
+                  : declaredSurfaces.size === 0
+                    ? 'not evaluated (linked issue scope was not explicit enough to classify)'
+                    : scopeAnomaly
+                      ? `⚠️ scope anomaly — changed surfaces outside declared scope: ${anomalousSurfaces.join(', ')}`
+                      : '✅ in declared issue scope'
+              }`,
+              scopeAnomaly
+                ? '**Heads-up:** This PR changed surfaces outside its declared issue scope. The Tech Reviewer should confirm the extra changes are intentional and in-scope before approving. (No human merge gate — the factory still merges on Tech Reviewer approval.)'
+                : undefined,
+              '',
+              `**Labels added:** ${toAdd.length > 0 ? toAdd.join(', ') : 'none'}`,
+              `**Labels removed:** ${toRemove.length > 0 ? toRemove.join(', ') : 'none'}`,
+              '',
+              `**Changed files (${paths.length}):**`,
+              ...paths.slice(0, 20).map(p => `- \`${p}\``),
+              paths.length > 20 ? `- _...and ${paths.length - 20} more_` : '',
+            ].filter(l => l !== undefined).join('\n');
+
+            const fs = require('fs');
+            if (process.env.GITHUB_STEP_SUMMARY) {
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+            }

@@ -1,0 +1,234 @@
+name: Deploy - Test
+
+# Phase 2 (#41/#44): promote a previously-built set of images to the `<TEST_NAMESPACE>`
+# namespace.  Triggered manually by a release manager once dev smoke passes.
+#
+# GATED: until Phase 2 is enabled the deploy job is skipped cleanly.  To enable,
+# set K8S_DEPLOY_ENABLED=true, TEST_NAMESPACE, and the KUBE_CONFIG_TEST
+# secret.  See docs/specs/live-cluster-deploy-smoke-rollback.md.
+#
+# Promotion carries the SAME image digests that were captured by build-images.yml
+# (ADR-0010).  The caller must supply the run ID of the Build Images run; there is
+# no tag-only fallback — a missing or unreadable digest artifact is a hard failure.
+#
+# NOTE: per spec, the helm/kubectl step should eventually move to the
+# `factory-deploy-nonprod` self-hosted runner once that runner is provisioned.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 'Run ID of the Build Images workflow run to promote (required; find it in the Actions tab)'
+        required: true
+        type: string
+      sha_tag:
+        description: 'Commit SHA for audit display (optional; defaults to "build-<run_id>" when omitted)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false   # Never silently discard a test promotion
+
+jobs:
+  preflight:
+    name: Preflight (gate)
+    runs-on: ubuntu-latest
+    outputs:
+      app_enabled: ${{ steps.gate.outputs.app_enabled }}
+    steps:
+      - id: gate
+        env:
+          DEPLOY_ENABLED: ${{ vars.K8S_DEPLOY_ENABLED }}
+          TEST_NAMESPACE: ${{ vars.TEST_NAMESPACE }}
+          HAS_DEPLOY_KUBECONFIG: ${{ secrets.KUBE_CONFIG_TEST != '' }}
+        run: |
+          APP_ENABLED=false
+          if [[ "$DEPLOY_ENABLED" == "true" && -n "$TEST_NAMESPACE" && "$HAS_DEPLOY_KUBECONFIG" == "true" ]]; then
+            APP_ENABLED=true
+          fi
+          echo "app_enabled=$APP_ENABLED" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Deploy Test preflight"
+            echo ""
+            echo "| Gate | Status |"
+            echo "|------|--------|"
+            if [ "$APP_ENABLED" = true ]; then
+              echo "| App deploy (frontend + worker) | ✅ enabled → \`$TEST_NAMESPACE\` |"
+            else
+              echo "| App deploy (frontend + worker) | ⏭️ skipped — needs K8S_DEPLOY_ENABLED + TEST_NAMESPACE + KUBE_CONFIG_TEST |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy app to <TEST_NAMESPACE>
+    needs: preflight
+    if: needs.preflight.outputs.app_enabled == 'true'
+    runs-on: ubuntu-latest   # TODO: move to factory-deploy-nonprod per spec once provisioned
+    environment: test
+    env:
+      TEST_NAMESPACE: ${{ vars.TEST_NAMESPACE }}
+      IMAGE_REGISTRY: ${{ vars.ACR_LOGIN_SERVER }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install helm
+        uses: azure/setup-helm@f0accbfd55e3332a28f721b8202b1016cecf90d5  # v5
+        with:
+          version: v3.18.3
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@c0c8b32d33a5244f1e5947304550403b63930415  # v4
+        with:
+          version: v1.32.4
+
+      - name: Configure kubeconfig (namespace-scoped gha-deployer)
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/kubeconfig"
+          echo "${{ secrets.KUBE_CONFIG_TEST }}" > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Ensure acr-pull imagePullSecret exists
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          kubectl create secret docker-registry acr-pull \
+            --namespace "$TEST_NAMESPACE" \
+            --docker-server="${IMAGE_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Download image digests from Build Images run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.build_run_id }}
+          pattern: image-digest-*
+          path: /tmp/digests/
+          merge-multiple: false
+
+      - name: Resolve and validate image digests
+        id: digests
+        env:
+          INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          FRONTEND_DIGEST=""
+          WORKER_DIGEST=""
+          if [[ -f /tmp/digests/image-digest-frontend/digest.txt ]]; then
+            FRONTEND_DIGEST=$(tr -d '[:space:]' < /tmp/digests/image-digest-frontend/digest.txt)
+          fi
+          if [[ -f /tmp/digests/image-digest-temporal-worker/digest.txt ]]; then
+            WORKER_DIGEST=$(tr -d '[:space:]' < /tmp/digests/image-digest-temporal-worker/digest.txt)
+          fi
+          if [[ -z "${FRONTEND_DIGEST}" ]]; then
+            echo "::error::frontend image digest missing from build run ${INPUT_BUILD_RUN_ID} — ADR-0010 requires pinned digests for promotion" >&2
+            exit 1
+          fi
+          if [[ -z "${WORKER_DIGEST}" ]]; then
+            echo "::error::temporal-worker image digest missing from build run ${INPUT_BUILD_RUN_ID} — ADR-0010 requires pinned digests for promotion" >&2
+            exit 1
+          fi
+          echo "frontend=${FRONTEND_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "worker=${WORKER_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image tag (for audit display)
+        id: img
+        env:
+          INPUT_SHA_TAG: ${{ inputs.sha_tag }}
+          INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          SHA_TAG="${INPUT_SHA_TAG}"
+          echo "tag=${SHA_TAG:-build-${INPUT_BUILD_RUN_ID}}" >> "$GITHUB_OUTPUT"
+
+      - name: Helm upgrade (<TEST_NAMESPACE>)
+        run: |
+          set -euo pipefail
+          helm upgrade --install rental-app charts/app \
+            -f charts/app/values-test.yaml \
+            --namespace "$TEST_NAMESPACE" \
+            --set "imageRegistry=${IMAGE_REGISTRY}" \
+            --set "frontend.image.digest=${{ steps.digests.outputs.frontend }}" \
+            --set "frontend.image.tag=${{ steps.img.outputs.tag }}" \
+            --set "temporalWorker.image.digest=${{ steps.digests.outputs.worker }}" \
+            --set "temporalWorker.image.tag=${{ steps.img.outputs.tag }}" \
+            --set "opsApi.image.digest=${{ steps.digests.outputs.worker }}" \
+            --set "opsApi.image.tag=${{ steps.img.outputs.tag }}" \
+            --wait --timeout 10m
+
+      - name: Deploy summary
+        if: always()
+        env:
+          INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          DIGEST_FRONTEND: ${{ steps.digests.outputs.frontend }}
+          DIGEST_WORKER: ${{ steps.digests.outputs.worker }}
+          IMAGE_TAG: ${{ steps.img.outputs.tag }}
+        run: |
+          {
+            echo "## Deploy Test → $TEST_NAMESPACE"
+            echo "- build run: ${INPUT_BUILD_RUN_ID}"
+            echo "- frontend digest: ${DIGEST_FRONTEND}"
+            echo "- worker digest: ${DIGEST_WORKER}"
+            echo "- tag (audit): ${IMAGE_TAG}"
+            echo "- next: smoke-dev-test-prod.yml (Phase 2 follow-up)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [preflight, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: deploy-test
+          WORKFLOW_CATEGORY: deploy
+          WORKFLOW_ENV: test
+          WORKFLOW_CLOUD: azure
+          WORKFLOW_METRICS: '{"helm_revision": null}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

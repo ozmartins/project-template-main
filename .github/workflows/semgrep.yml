@@ -1,0 +1,109 @@
+name: Validate - Semgrep
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: semgrep-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Semgrep scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run Semgrep
+        id: semgrep
+        # The issue explicitly requires semgrep-action v1; ADR-0080 records the
+        # follow-up path to migrate away from this deprecated wrapper.
+        uses: semgrep/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
+        continue-on-error: true
+        with:
+          config: >-
+            p/typescript
+            p/javascript
+            p/security-audit
+            p/owasp-top-ten
+            p/secrets
+          paths: >-
+            frontend/src
+            temporal/src
+          generateSarif: "1"
+
+      - name: Upload Semgrep SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          sarif_file: semgrep.sarif
+
+      - name: Upload Semgrep SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce ERROR severity gate
+        if: always()
+        env:
+          SEMGREP_STEP_OUTCOME: ${{ steps.semgrep.outcome }}
+        run: |
+          # Python keeps SARIF parsing and failure reporting robust without
+          # depending on jq or brittle shell string handling.
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          sarif_path = pathlib.Path("semgrep.sarif")
+          if not sarif_path.exists():
+              print("::error::Semgrep did not produce semgrep.sarif", file=sys.stderr)
+              raise SystemExit(1)
+
+          with sarif_path.open() as f:
+              sarif = json.load(f)
+
+          runs = sarif.get("runs") or []
+          results = runs[0].get("results", []) if runs else []
+          counts = {"error": 0, "warning": 0, "note": 0, "other": 0}
+          for result in results:
+              level = str(result.get("level", "other")).lower()
+              counts[level if level in counts else "other"] += 1
+
+          summary = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary, "a", encoding="utf-8") as fh:
+              fh.write("## Semgrep scan\n")
+              fh.write("| Level | Count |\n")
+              fh.write("|---|---:|\n")
+              fh.write(f"| error | {counts['error']} |\n")
+              fh.write(f"| warning | {counts['warning']} |\n")
+              fh.write(f"| note | {counts['note']} |\n")
+              fh.write(f"| other | {counts['other']} |\n")
+              fh.write("\nSARIF artifact: `semgrep-sarif`\n")
+
+          if counts["error"] > 0:
+              print(
+                  f"::error::{counts['error']} Semgrep ERROR-severity finding(s) detected",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+
+          if os.environ.get("SEMGREP_STEP_OUTCOME") != "success":
+              print("::error::Semgrep scan step failed", file=sys.stderr)
+              raise SystemExit(1)
+          PY

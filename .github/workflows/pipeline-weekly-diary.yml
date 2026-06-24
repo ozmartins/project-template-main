@@ -1,0 +1,85 @@
+name: Pipeline - Weekly Diary
+
+# Weekly diary pipeline per ADR-0076.
+# Runs once per week on Friday at 18:00 UTC (end of work week).
+#
+# Stage:
+#   1. diary-agent  — writes docs/diary/YYYY-WXX.md and updates the rolling index
+#
+# The diary agent is read-only output: it writes diary files and never files issues.
+# It requires contents:write to commit the diary entry to the repository.
+#
+# Each stage uses continue-on-error: true and a per-stage timeout so a failing or
+# hung stage does not silently block the summary.
+# Stage outcome is appended to $GITHUB_STEP_SUMMARY.
+
+on:
+  schedule:
+    - cron: '0 18 * * 5'   # Friday at 18:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-weekly-diary
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0   # full history needed for git push
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Initialise step summary
+        run: |
+          {
+            echo "## Weekly pipeline — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Stage | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 1: Diary Agent ──────────────────────────────────────────────────
+      - name: Stage — Diary Agent
+        id: diary_agent
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: .github/tools/shared
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          FACTORY_CONFIG_PATH: ${{ github.workspace }}/.github/factory.yml
+          AGENTS_PATH: ${{ github.workspace }}/.github/agents
+        run: npx tsx src/run-agent.ts --agent diary-agent
+
+      - name: Summarise — Diary Agent
+        if: always()
+        env:
+          OUTCOME: ${{ steps.diary_agent.outcome }}
+        run: |
+          STATUS="✅ ok"
+          [ "$OUTCOME" != "success" ] && STATUS="⚠️ $OUTCOME"
+          echo "| diary-agent | $STATUS |" >> "$GITHUB_STEP_SUMMARY"

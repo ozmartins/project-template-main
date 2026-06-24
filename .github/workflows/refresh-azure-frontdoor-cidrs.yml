@@ -1,0 +1,70 @@
+name: Refresh - Azure Front Door CIDRs
+
+on:
+  schedule:
+    - cron: '0 5 * * 1' # weekly on Monday at 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-azure-frontdoor-cidrs
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Validate required secrets
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          PROJECT_MANAGER_PAT: ${{ secrets.PROJECT_MANAGER_PAT }}
+        run: |
+          missing=0
+          for key in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID PROJECT_MANAGER_PAT; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing required secret: $key"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Required secrets are missing; this workflow requires PROJECT_MANAGER_PAT for trusted PR automation identity. See README.md Azure Front Door CIDR refresh section." >&2
+            exit 1
+          fi
+
+      - name: Azure login
+        uses: azure/login@1384c340ab2dda50fed2bee3041d1d87018aa5e8  # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Regenerate Azure Front Door backend CIDRs
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_SERVICE_TAGS_LOCATION || 'eastus' }}
+        run: bash .github/scripts/refresh-afd-backend-cidrs.sh deploy/azure/afd-backend-cidrs.txt
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7
+        with:
+          token: ${{ secrets.PROJECT_MANAGER_PAT }}
+          branch: automation/azure-frontdoor-cidrs
+          delete-branch: true
+          commit-message: "chore(platform): refresh Azure Front Door backend CIDRs"
+          title: "chore(platform): refresh Azure Front Door backend CIDRs"
+          body: |
+            Automated weekly refresh of `deploy/azure/afd-backend-cidrs.txt` from Azure service tags.
+
+            - Workflow: `.github/workflows/refresh-azure-frontdoor-cidrs.yml`
+            - Source query: `AzureFrontDoor.Backend` (`az network list-service-tags`)
+          labels: |
+            queue:platform
+          add-paths: |
+            deploy/azure/afd-backend-cidrs.txt

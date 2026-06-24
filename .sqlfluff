@@ -1,0 +1,9 @@
+[sqlfluff]
+dialect = postgres
+templater = raw
+# Existing migrations use aligned columns and legacy quoted/keyword-shaped
+# identifiers, so keep this gate focused on parser/safety checks for now:
+# - CP01: keyword case
+# - LT01/LT02/LT05: spacing, indentation, and long lines
+# - RF04/RF06: keyword-shaped and quoted identifiers
+exclude_rules = CP01,LT01,LT02,LT05,RF04,RF06

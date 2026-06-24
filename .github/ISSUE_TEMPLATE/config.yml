@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing Guide
+    url: https://github.com/Volaris-AI/project-template/blob/main/CONTRIBUTING.md
+    about: Read this before filing an issue — it explains the canonical format and label taxonomy.
+  - name: Canonical Issue Format
+    url: https://github.com/Volaris-AI/project-template/blob/main/doc_templates/ISSUE.md
+    about: The authoritative standard for issue structure and section requirements.

@@ -1,0 +1,71 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      dev-tooling:
+        patterns:
+          - "@types/*"
+          - "vite*"
+          - "vitest*"
+          - "@biomejs/*"
+          - "playwright*"
+          - "@playwright/*"
+    labels:
+      - "dependencies"
+      - "frontend"
+
+  - package-ecosystem: "npm"
+    directory: "/temporal"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      temporal-sdk:
+        patterns:
+          - "@temporalio/*"
+      dev-tooling:
+        patterns:
+          - "@types/*"
+          - "@biomejs/*"
+          - "ts-*"
+          - "jest*"
+          - "@jest/*"
+    labels:
+      - "dependencies"
+      - "temporal"
+
+  - package-ecosystem: "npm"
+    directory: "/.github/tools/shared"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+
+  - package-ecosystem: "npm"
+    directory: "/scripts/audit"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"

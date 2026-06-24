@@ -1,0 +1,655 @@
+name: PR - Validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-validation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Cancel stale runs on PRs so a new push always advances to the current
+  # head SHA instead of queuing behind an older run that can never finish.
+  # Push-to-main runs are NOT cancelled (expression evaluates to false for
+  # non-PR events), preserving trunk validation coverage.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  LEFTHOOK: 0
+
+jobs:
+  shared-tools:
+    name: Shared tools regression suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: .github/tools/shared/package-lock.json
+
+      - name: Install shared runtime deps
+        run: npm ci
+        working-directory: .github/tools/shared
+
+      - name: Run shared Vitest regression suite
+        run: npm test
+        working-directory: .github/tools/shared
+
+  sql-migrations:
+    name: SQL migration lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install sqlfluff
+        run: python3 -m pip install --disable-pip-version-check sqlfluff==4.2.0
+
+      - name: Lint SQL migrations
+        run: sqlfluff lint supabase/migrations --config .sqlfluff
+
+  yaml-files:
+    name: YAML workflow & chart lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install yamllint
+        run: python3 -m pip install --disable-pip-version-check yamllint==1.37.1
+
+      - name: Lint workflow and chart YAML
+        run: yamllint -c .yamllint.yml .github/workflows charts
+
+  markdown-docs:
+    name: Markdown docs lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Lint Markdown
+        run: npx --yes markdownlint-cli2@0.16.0 --config .markdownlint.yaml "docs/**/*.md" README.md
+
+  frontend:
+    name: Frontend lint & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: frontend
+
+      - name: License compliance check
+        run: npm run licenses:check
+        working-directory: frontend
+
+      - name: Lint
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Build
+        run: npm run build
+        working-directory: frontend
+
+      # Run the unit suite with the JSON reporter so the result can be charted on the
+      # ci-history branch. A red suite MUST fail CI — we no longer swallow failures into
+      # a "skipped" message (that hid breakage the same way #57/#58 did for Temporal).
+      # We only genuinely skip when there is no `test` script at all (template portability).
+      # Output is written to the workspace root (../vitest-results.json relative to the
+      # frontend/ working-directory) so the upload-artifact path has no subdirectory
+      # prefix; download-artifact then extracts to artifacts/unit/vitest-results.json,
+      # matching the path probe in the publish-test-history job.
+      - name: Unit tests with coverage gate (vitest, JSON report for trend history)
+        working-directory: frontend
+        run: |
+          if [ -z "$(node -p "require('./package.json').scripts.test || ''" 2>/dev/null)" ]; then
+            echo "## ℹ️ Frontend tests skipped — no test script configured" >> "$GITHUB_STEP_SUMMARY"
+            printf '{"numPassedTests":0,"numFailedTests":0,"numPendingTests":0,"numTodoTests":0,"testResults":[],"success":true}\n' > ../vitest-results.json
+          else
+            npx vitest run --coverage --reporter=default --reporter=json --outputFile=../vitest-results.json
+          fi
+
+      - name: Upload unit results (trend history)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: unit-results
+          path: vitest-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  temporal:
+    name: Temporal worker lint, typecheck & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: temporal/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: temporal
+
+      - name: License compliance check
+        run: npm run licenses:check
+        working-directory: temporal
+
+      - name: Lint
+        run: npm run lint
+        working-directory: temporal
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: temporal
+
+      - name: Run Temporal DSL tests
+        working-directory: temporal
+        run: npx jest --testPathPatterns="tests/(interpreter|expression|schema|duration|llm_agent)\\.test\\.ts$" --passWithNoTests
+
+      - name: Test Temporal suite
+        # Skip ONLY when there are genuinely no tests (template portability).
+        # When tests exist, a red suite MUST fail CI.
+        # Use npx jest directly with --outputFile so Jest writes the JSON report
+        # to a file rather than stdout. This avoids npm's script-run banner
+        # ("> temporal-worker@x.y.z test") contaminating the file and causing
+        # "Unexpected token '>'" parse errors in the ci-history publisher.
+        # The output file path (../pytest-report.json, relative to temporal/)
+        # maps to pytest-report.json at the workspace root; download-artifact
+        # then extracts it to artifacts/temporal/pytest-report.json, matching
+        # the publish-test-history probe.
+        run: |
+          if [ -z "$(find tests -name '*.test.ts' -print -quit 2>/dev/null)" ]; then
+            echo "## ℹ️ Temporal tests skipped — no test files present" >> "$GITHUB_STEP_SUMMARY"
+            printf '{"numPassedTests":0,"numFailedTests":0,"numPendingTests":0,"numTodoTests":0,"testResults":[],"success":true}\n' > ../pytest-report.json
+          else
+            npx jest --forceExit --coverage --json --outputFile=../pytest-report.json
+          fi
+        working-directory: temporal
+
+      - name: Upload temporal results (trend history)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: temporal-results
+          path: pytest-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  temporal-dsl:
+    name: Temporal DSL stub tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: temporal/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: temporal
+
+      - name: Run Temporal DSL tests
+        working-directory: temporal
+        run: >
+          npx jest --runTestsByPath
+          tests/interpreter.test.ts
+          tests/expression.test.ts
+          tests/schema.test.ts
+          tests/duration.test.ts
+          tests/llm_agent.test.ts
+          --passWithNoTests
+
+  helm-charts:
+    name: Helm chart lint & profile tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: azure/setup-helm@f0accbfd55e3332a28f721b8202b1016cecf90d5  # v5
+        with:
+          version: 'latest'
+
+      - name: Lint and render all profiles
+        env:
+          # Tells ci-test.sh to drop a machine-readable summary for the ci-history trend.
+          CI_HISTORY_JSON: ${{ github.workspace }}/helm-results.json
+        run: bash charts/app/ci-test.sh
+
+      - name: Frontend entrypoint runtime-contract tests
+        run: bash frontend/docker/test-entrypoint.sh
+
+      - name: Upload helm results (trend history)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: helm-results
+          path: helm-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  supabase-seed:
+    name: Supabase demo-baseline seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run demo baseline seed validation
+        id: seed
+        run: bash supabase/tests/run_demo_baseline_seed.sh
+
+      - name: Record seed outcome (trend history)
+        if: always()
+        run: |
+          out=passed
+          [ "${{ steps.seed.outcome }}" = "success" ] || out=failed
+          printf '{"outcome":"%s"}\n' "$out" > seed-results.json
+
+      - name: Upload seed results (trend history)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: seed-results
+          path: seed-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+  supabase-auth-rbac:
+    name: Supabase auth & RBAC contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run auth RBAC contract tests
+        run: bash supabase/tests/run_auth_rbac.sh
+
+  supabase-auth-integration:
+    name: Supabase auth integration tests (users, roles, MFA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: supabase/tests/integration/package-lock.json
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf  # v2
+        with:
+          version: latest
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start Supabase
+        run: supabase start
+
+      - name: Run auth integration tests
+        run: bash supabase/tests/run_auth_integration.sh
+        env:
+          SUPABASE_URL: http://127.0.0.1:54321
+          SUPABASE_ANON_KEY: ${{ env.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ env.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop
+
+  supabase-rpc-guards:
+    name: Supabase direct-DB write-RPC guard contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run direct-DB write-RPC guard contract tests
+        run: bash supabase/tests/run_direct_db_write_rpc_guards.sh
+
+  supabase-create-entity-rpc-reset:
+    name: Supabase create_entity_with_version reset-path contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf  # v2
+        with:
+          version: latest
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run create_entity_with_version reset-path contract tests
+        run: bash supabase/tests/run_create_entity_with_version_reset.sh
+
+  supabase-seed-demo-users:
+    name: Supabase seed-demo-users integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run seed-demo-users integration tests
+        run: bash supabase/tests/run_seed_demo_users.sh
+
+  supabase-workflow-classifications:
+    name: Supabase workflow_classifications contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run workflow_classifications contract tests
+        run: bash supabase/tests/run_workflow_classifications_contract.sh
+
+  coverage:
+    name: Coverage (non-gating)
+    # Informational telemetry for the ci-history `coverage` trend (unit code coverage +
+    # e2e screens/journeys). NEVER gates: kept out of the gating `frontend` job because
+    # coverage instrumentation slows tests enough to tip borderline timeouts. Recorded
+    # only on push-to-main (matching publish-test-history), so it doesn't burn PR minutes.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: frontend
+      - name: Unit coverage (vitest v8 — best-effort, never fails the job)
+        working-directory: frontend
+        run: npx vitest run --coverage --test-timeout=30000 || true
+      - name: Compute coverage (unit + e2e screens/journeys)
+        run: |
+          node .github/scripts/coverage-compute.mjs \
+            --frontend frontend \
+            --unit-coverage frontend/coverage/coverage-summary.json \
+            > coverage-results.json || echo '{}' > coverage-results.json
+          cat coverage-results.json
+      - name: Record coverage to ci-history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH=ci-history
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          node .github/scripts/test-history-record.mjs --suite coverage --format generic \
+            --results coverage-results.json > new-records.jsonl
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            rm -rf hist && mkdir hist && cd hist
+            git init -q && git remote add origin "$REPO_URL"
+            if git fetch -q --depth 1 origin "$BRANCH"; then git checkout -q -b "$BRANCH" FETCH_HEAD; else git checkout -q --orphan "$BRANCH"; fi
+            cat ../new-records.jsonl >> runs.jsonl
+            node ../.github/scripts/test-history-render.mjs .
+            git add -A && git commit -q -m "ci: record coverage run ${GITHUB_RUN_ID}"
+            if git push -q origin "$BRANCH"; then echo "published"; cd ..; exit 0; fi
+            echo "push rejected (attempt $attempt) — retrying"; cd ..
+          done
+          echo "failed to publish after retries" >&2; exit 1
+
+  dockerfile-lint:
+    name: Dockerfile lint (hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: frontend/Dockerfile
+          failure-threshold: warning
+      - uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: temporal/Dockerfile
+          failure-threshold: warning
+
+  validation-summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs:
+      - shared-tools
+      - sql-migrations
+      - yaml-files
+      - markdown-docs
+      - frontend
+      - temporal
+      - temporal-dsl
+      - helm-charts
+      - supabase-seed
+      - supabase-auth-rbac
+      - supabase-auth-integration
+      - supabase-rpc-guards
+      - supabase-create-entity-rpc-reset
+      - supabase-seed-demo-users
+      - supabase-workflow-classifications
+      - dockerfile-lint
+    if: always()
+    steps:
+      - name: Report
+        run: |
+          echo "## PR Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Shared tools regression suite | ${{ needs.shared-tools.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SQL migration lint | ${{ needs.sql-migrations.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| YAML workflow & chart lint | ${{ needs.yaml-files.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Markdown docs lint | ${{ needs.markdown-docs.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Frontend lint, build & unit tests | ${{ needs.frontend.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Temporal tests | ${{ needs.temporal.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Temporal DSL stub tests | ${{ needs.temporal-dsl.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Helm chart profile tests | ${{ needs.helm-charts.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase demo-baseline seed | ${{ needs.supabase-seed.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase auth & RBAC contract tests | ${{ needs.supabase-auth-rbac.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase auth integration tests | ${{ needs.supabase-auth-integration.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase direct-DB write-RPC guard contracts | ${{ needs.supabase-rpc-guards.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase create_entity_with_version reset-path contracts | ${{ needs.supabase-create-entity-rpc-reset.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase seed-demo-users tests | ${{ needs.supabase-seed-demo-users.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Supabase workflow_classifications contract tests | ${{ needs.supabase-workflow-classifications.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dockerfile lint (hadolint) | ${{ needs.dockerfile-lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build-over-build trends for these suites: [\`ci-history\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/ci-history) branch." >> "$GITHUB_STEP_SUMMARY"
+
+  publish-test-history:
+    name: Append CI test results to ci-history + render dashboard
+    needs: [frontend, temporal, helm-charts, supabase-seed]
+    # Record build-over-build health of the merged trunk only: publish on pushes to
+    # main (i.e. after a merge), not on every PR commit. PR runs still gate and still
+    # upload per-suite artifacts — they just don't pollute the long-term trend, and we
+    # avoid needing write access on (potentially fork) pull_request events.
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Check out main only to get the record/render scripts.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      # Per-suite results, each uploaded by the jobs above with if: always(). Any may be
+      # absent if a runner died before writing it; the record script degrades to an
+      # "error" record rather than failing.
+      - name: Download unit results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: unit-results
+          path: artifacts/unit
+        continue-on-error: true
+      - name: Download temporal results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: temporal-results
+          path: artifacts/temporal
+        continue-on-error: true
+      - name: Download helm results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: helm-results
+          path: artifacts/helm
+        continue-on-error: true
+      - name: Download seed results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: seed-results
+          path: artifacts/seed
+        continue-on-error: true
+
+      - name: Append records + render, then push to ci-history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH=ci-history
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          REC=.github/scripts/test-history-record.mjs
+
+          # Build this run's new record lines from whatever artifacts arrived.
+          : > new-records.jsonl
+          if [ -f artifacts/unit/vitest-results.json ]; then
+            node "$REC" --suite unit --format vitest --results artifacts/unit/vitest-results.json >> new-records.jsonl
+          fi
+          if [ -f artifacts/temporal/pytest-report.json ]; then
+            node "$REC" --suite temporal --format vitest --results artifacts/temporal/pytest-report.json >> new-records.jsonl
+          fi
+          if [ -f artifacts/helm/helm-results.json ]; then
+            node "$REC" --suite helm --format generic --results artifacts/helm/helm-results.json >> new-records.jsonl
+          fi
+          if [ -f artifacts/seed/seed-results.json ]; then
+            node "$REC" --suite seed --format generic --results artifacts/seed/seed-results.json >> new-records.jsonl
+          fi
+          if [ ! -s new-records.jsonl ]; then
+            echo "No results to record (all artifacts missing) — nothing to publish."
+            exit 0
+          fi
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Push with a fetch/rebase-of-the-file retry loop so concurrent runs can't
+          # clobber each other's appends to runs.jsonl.
+          for attempt in 1 2 3 4 5; do
+            rm -rf hist && mkdir hist && cd hist
+            git init -q
+            git remote add origin "$REPO_URL"
+            if git fetch -q --depth 1 origin "$BRANCH"; then
+              git checkout -q -b "$BRANCH" FETCH_HEAD
+            else
+              git checkout -q --orphan "$BRANCH"
+            fi
+            cat ../new-records.jsonl >> runs.jsonl
+            node ../.github/scripts/test-history-render.mjs .
+            git add -A
+            git commit -q -m "ci: record test run ${GITHUB_RUN_ID} ($(wc -l < ../new-records.jsonl | tr -d ' ') suite result(s))"
+            if git push -q origin "$BRANCH"; then
+              echo "Published to $BRANCH (attempt $attempt)."
+              cd ..
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) — likely a concurrent update; retrying."
+            cd ..
+          done
+          echo "Failed to publish after retries." >&2
+          exit 1
+
+      - name: Link in job summary
+        if: always()
+        run: |
+          {
+            echo "## CI test trend history"
+            echo "Dashboard: browse the [\`ci-history\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/ci-history) branch (README renders the charts)."
+            echo "Raw feed: \`runs.jsonl\` on that branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  publish_workflow_health:
+    name: Publish workflow-history + health dashboard
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [validation-summary, publish-test-history]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Append workflow-history record
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          WORKFLOW_NAME: pr-validation
+          WORKFLOW_CATEGORY: test
+          WORKFLOW_ENV:
+          WORKFLOW_CLOUD:
+          WORKFLOW_METRICS: '{}'
+        run: |
+          node - <<'NODE' > record.json
+          const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
+          const workflow = process.env.WORKFLOW_NAME;
+          const category = process.env.WORKFLOW_CATEGORY;
+          const env = process.env.WORKFLOW_ENV || undefined;
+          const cloud = process.env.WORKFLOW_CLOUD || undefined;
+          const metrics = JSON.parse(process.env.WORKFLOW_METRICS || '{}');
+          const results = Object.values(needs).map((n) => n.result);
+          const failed = results.filter((r) => r === 'failure').length;
+          const cancelled = results.filter((r) => r === 'cancelled').length;
+          const skipped = results.filter((r) => r === 'skipped').length;
+          const outcome = failed > 0 ? 'failed' : cancelled > 0 ? 'error' : skipped === results.length ? 'skipped' : 'passed';
+          const summary = Object.entries(needs).map(([job, info]) => `${job}:${info.result}`).join(', ');
+          const record = { workflow, category, outcome, summary, env, cloud, metrics: { ...metrics, failed_jobs: failed, skipped_jobs: skipped } };
+          process.stdout.write(JSON.stringify(record));
+          NODE
+          node .github/scripts/workflow-record.mjs "$(cat record.json)"
+
+      - name: Render and publish docs/ci-status
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/health-render-publish.mjs

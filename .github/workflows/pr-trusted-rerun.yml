@@ -1,0 +1,119 @@
+name: PR - Trusted rerun for Copilot gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Same-repo pull request number to re-run blocked workflows for
+        required: true
+        type: number
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-trusted-rerun-${{ inputs.pull_request_number }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run blocked pull-request workflows
+        id: rerun
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        env:
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = Number(process.env.PR_NUMBER);
+
+            if (!Number.isInteger(prNumber) || prNumber <= 0) {
+              core.setFailed(`Invalid pull_request_number: ${process.env.PR_NUMBER}`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+
+            if (pr.head.repo.full_name.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
+              core.setFailed(
+                `PR #${prNumber} is from ${pr.head.repo.full_name}; this backstop only handles same-repo PRs.`
+              );
+              return;
+            }
+
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner,
+              repo,
+              branch: pr.head.ref,
+              event: "pull_request",
+              per_page: 100,
+            });
+
+            const blockedRuns = data.workflow_runs.filter((run) =>
+              run.head_sha === pr.head.sha && run.conclusion === "action_required"
+            );
+
+            core.setOutput("head_branch", pr.head.ref);
+            core.setOutput("head_sha", pr.head.sha);
+            core.setOutput("matched_count", String(blockedRuns.length));
+            core.setOutput("run_ids", blockedRuns.map((run) => String(run.id)).join(", "));
+
+            if (blockedRuns.length === 0) {
+              core.notice(`No action_required pull_request runs found for PR #${prNumber} at ${pr.head.sha}.`);
+              core.setOutput("rerun_count", "0");
+              return;
+            }
+
+            const failedReruns = [];
+
+            for (const run of blockedRuns) {
+              try {
+                await github.request("POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun", {
+                  owner,
+                  repo,
+                  run_id: run.id,
+                });
+              } catch (error) {
+                failedReruns.push(`${run.id} (${run.name}): ${error instanceof Error ? error.message : String(error)}`);
+              }
+            }
+
+            core.setOutput("rerun_count", String(blockedRuns.length - failedReruns.length));
+
+            if (failedReruns.length > 0) {
+              core.setFailed(`Failed to re-run blocked workflows: ${failedReruns.join("; ")}`);
+            }
+
+      - name: Summarise rerun request
+        if: always()
+        env:
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          HEAD_BRANCH: ${{ steps.rerun.outputs.head_branch }}
+          HEAD_SHA: ${{ steps.rerun.outputs.head_sha }}
+          MATCHED_COUNT: ${{ steps.rerun.outputs.matched_count }}
+          RERUN_COUNT: ${{ steps.rerun.outputs.rerun_count }}
+          RUN_IDS: ${{ steps.rerun.outputs.run_ids }}
+        run: |
+          {
+            echo "## Trusted rerun for Copilot gate"
+            echo ""
+            echo "- PR: #${PR_NUMBER}"
+            echo "- Head branch: \`${HEAD_BRANCH:-unknown}\`"
+            echo "- Head SHA: \`${HEAD_SHA:-unknown}\`"
+            if [ "${MATCHED_COUNT:-0}" = "0" ]; then
+              echo "- Result: no \`action_required\` pull_request workflow runs were found for this head SHA."
+            else
+              echo "- Matched blocked runs: ${MATCHED_COUNT}"
+              echo "- Rerun requests sent: ${RERUN_COUNT:-0}"
+              echo "- Run IDs: ${RUN_IDS}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

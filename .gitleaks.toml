@@ -1,0 +1,24 @@
+[extend]
+# Start from the upstream default rules
+useDefault = true
+
+[allowlist]
+description = "Project-level allowlist for known test fixtures and non-secrets"
+paths = [
+  # Supabase local-dev well-known anon key (documented as public in Supabase docs)
+  '''^supabase/seed\.sql$''',
+  '''^supabase/config\.toml$''',
+  '''^supabase/tests/.*''',
+  # Example env files are intentionally redacted placeholders
+  '''\.env\.example$''',
+  # CI history branch artifacts
+  '''ci-history/''',
+]
+regexes = [
+  # Supabase local-dev JWT — all local instances share this well-known key
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6''',
+  # Placeholder values in example files
+  '''<YOUR_.*>''',
+  '''REPLACE_ME''',
+  '''your[-_].*[-_]here''',
+]

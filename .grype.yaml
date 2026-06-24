@@ -1,0 +1,13 @@
+# .grype.yaml — Grype vulnerability scanner configuration
+#
+# NOTE: anchore/scan-action@v4.1.0 does NOT support a 'grype-config' input.
+# The workflow passes this file path via the GRYPE_CONFIG environment variable
+# on the Grype scan step instead.  If that env-var approach is ever removed,
+# verify this file is actually loaded before relying on its settings.
+#
+# The `only-fixed: true` option in build-images.yml ensures Grype reports only
+# CVEs that have an available upstream fix, matching Trivy's `ignore-unfixed:
+# true` policy in the informational vuln scan step.  Grype always downloads a
+# fresh vulnerability DB on each run (GRYPE_DB_UPDATE=true default), so no
+# db.validate-age override is needed here.
+

@@ -1,0 +1,4 @@
+# Merge strategy for append-only ADR index.
+# The union driver takes all added lines from both sides, preventing conflicts
+# when multiple Copilot branches each add a new ADR entry simultaneously.
+docs/adrs/README.md merge=union

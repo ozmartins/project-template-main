@@ -1,0 +1,116 @@
+name: Container scan (scheduled)
+
+# Weekly scheduled scan of the images currently in ACR to catch CVEs introduced
+# by base image updates without a code change (base image drift). Results are
+# uploaded to the Security tab; a new GitHub issue is filed for each image when
+# HIGH/CRITICAL findings are detected and no open issue already exists.
+#
+# The scan is skipped automatically when ACR is not configured (e.g. template
+# forks that have not set vars.ACR_LOGIN_SERVER / secrets.ACR_USERNAME /
+# secrets.ACR_PASSWORD). This prevents noisy failures in unconfigured repos.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC — weekly base image check
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  scan:
+    name: Scan ${{ matrix.image_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: frontend
+          - image_name: temporal-worker
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Check ACR configuration
+        id: config-gate
+        env:
+          REGISTRY: ${{ vars.ACR_LOGIN_SERVER }}
+          REGISTRY_USERNAME: ${{ secrets.ACR_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          if [ -z "$REGISTRY" ] || [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+            echo "ACR not configured — skipping scheduled scan"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to ACR
+        if: steps.config-gate.outputs.enabled == 'true'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ${{ vars.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Pull latest image from ACR
+        if: steps.config-gate.outputs.enabled == 'true'
+        run: |
+          docker pull "${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image_name }}:latest"
+          docker tag "${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image_name }}:latest" \
+            "${{ matrix.image_name }}:scan-scheduled"
+
+      - name: Scan — Trivy (CVE + misconfig + secret)
+        id: trivy
+        if: steps.config-gate.outputs.enabled == 'true'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image_name }}:scan-scheduled
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-${{ matrix.image_name }}.sarif
+
+      - name: Upload Trivy SARIF to Security tab
+        if: steps.config-gate.outputs.enabled == 'true' && always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b0c4fd77f6c559021d78430ec4d0d169ae74a4eb  # v3
+        with:
+          sarif_file: trivy-${{ matrix.image_name }}.sarif
+          category: scheduled-container-${{ matrix.image_name }}
+
+      - name: File issue on CVE findings
+        if: steps.trivy.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="security: HIGH/CRITICAL CVEs in ${{ matrix.image_name }}:latest — $(date +%Y-%m-%d)"
+          BODY=$(cat <<'EOF'
+          The scheduled weekly container image scan found HIGH or CRITICAL vulnerabilities in `${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image_name }}:latest`.
+
+          Please review and remediate the findings shown in the Security tab and in the workflow run linked below.
+
+          **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          # Deduplicate: only file a new issue if no open security issue already exists for this image
+          EXISTING=$(gh issue list --state open --label security --json title \
+            --jq '.[].title' 2>/dev/null | grep -c "${{ matrix.image_name }}" || true)
+          if [ "$EXISTING" -eq 0 ]; then
+            gh issue create \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --label "security" \
+              || gh issue create --title "$TITLE" --body "$BODY"
+          else
+            echo "Open security issue already exists for ${{ matrix.image_name }} — skipping duplicate."
+          fi
