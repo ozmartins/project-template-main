@@ -1,15 +1,15 @@
 # Engineering health dashboard
 
-Generated: 2026-06-24 20:07Z
+Generated: 2026-06-24 20:21Z
 
 ## CI suites
 
 | Suite | Last outcome | Last run | Pass 24h | Pass 7d | SLO | Streak |
 |---|---|---|---:|---:|---|---:|
-| `unit` | — | — | — | — | — | 0 |
-| `temporal` | — | — | — | — | — | 0 |
-| `helm` | — | — | — | — | — | 0 |
-| `seed` | — | — | — | — | — | 0 |
+| `unit` | ✅ passed | 2026-06-24 20:06Z | 100% (1) | 100% (1) | — | 1 |
+| `temporal` | ❌ failed | 2026-06-24 20:07Z | 0% (1) | 0% (1) | — | 0 |
+| `helm` | ✅ passed | — | — | — | — | 1 |
+| `seed` | ✅ passed | — | — | — | — | 1 |
 
 ## E2E suites
 
@@ -45,7 +45,12 @@ Generated: 2026-06-24 20:07Z
 
 ## Unstable tests
 
-_No unstable tests in the last 7 days._
+| Test | Suite | Failures (7d) |
+|---|---|---:|
+| Azure API version fallback contract in production call sites uses 2025-03-01-preview fallback in llm_agent when AZURE_OPENAI_API_VERSION is unset | `temporal` | 1 |
+| Azure API version fallback contract in production call sites keeps llm_agent and probe-llm fallback versions aligned | `temporal` | 1 |
+| lint-ontology script passes current migrations and seed | `temporal` | 1 |
+
 
 ## Open incidents
 
