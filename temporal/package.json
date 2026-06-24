@@ -32,7 +32,7 @@
     "pg": "^8.13.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.0",
+    "@biomejs/biome": "^2.5.1",
     "@temporalio/testing": "^1.18.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.0.0",
