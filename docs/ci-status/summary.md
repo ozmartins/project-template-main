@@ -1,22 +1,22 @@
 # Engineering health dashboard
 
-Generated: 2026-06-23 02:55Z
+Generated: 2026-06-24 20:07Z
 
 ## CI suites
 
 | Suite | Last outcome | Last run | Pass 24h | Pass 7d | SLO | Streak |
 |---|---|---|---:|---:|---|---:|
-| `unit` | — | — | — | — | ✅ ≥95% | 0 |
-| `temporal` | — | — | — | — | ✅ ≥90% | 0 |
-| `helm` | — | — | — | — | ✅ ≥99% | 0 |
-| `seed` | — | — | — | — | ✅ ≥99% | 0 |
+| `unit` | — | — | — | — | — | 0 |
+| `temporal` | — | — | — | — | — | 0 |
+| `helm` | — | — | — | — | — | 0 |
+| `seed` | — | — | — | — | — | 0 |
 
 ## E2E suites
 
 | Suite | Last outcome | Last run | Pass 24h | Pass 7d | SLO | Streak |
 |---|---|---|---:|---:|---|---:|
-| `smoke` | — | — | — | — | ✅ ≥95% | 0 |
-| `experience` | — | — | — | — | ✅ ≥80% | 0 |
+| `smoke` | — | — | — | — | — | 0 |
+| `experience` | — | — | — | — | — | 0 |
 
 ## Deployments
 
@@ -27,6 +27,7 @@ Generated: 2026-06-23 02:55Z
 
 | Workflow | Last run | Outcome | Metrics |
 |---|---|---|---|
+| `validate-ontology` | 2026-06-24 20:07Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
 
 ## Security & audits
 
@@ -40,7 +41,7 @@ Generated: 2026-06-23 02:55Z
 | `pipeline-daily` | — | — |
 | `monitor-actions` | — | — |
 | `validate-dsl-definitions` | — | — |
-| `validate-ontology` | — | — |
+| `validate-ontology` | 2026-06-24 20:07Z | ❌ failed |
 
 ## Unstable tests
 
