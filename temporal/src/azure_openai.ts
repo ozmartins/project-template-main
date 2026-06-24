@@ -1,7 +1,14 @@
 const RESPONSES_API_VERSION = "2025-03-01-preview";
 const RESPONSES_API_MIN_DATE = RESPONSES_API_VERSION.replace(/-preview$/, "");
 
+// Azure's newer OpenAI "v1" surface (/openai/v1/...) accepts the literal
+// api-version values "preview" and "latest" (required by GPT-5.x deployments,
+// which reject the older dated preview versions). Treat those as valid so the
+// configured value is passed through verbatim instead of being reset.
+const LITERAL_API_VERSIONS = new Set(["preview", "latest"]);
+
 function isResponsesApiCompatibleVersion(version: string): boolean {
+  if (LITERAL_API_VERSIONS.has(version)) return true;
   const match = /^(\d{4})-(\d{2})-(\d{2})(?:-preview)?$/.exec(version);
   if (!match) return false;
 

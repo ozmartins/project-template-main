@@ -93,6 +93,15 @@ services:
       - AZURE_OPENAI_BASE_URL=${AZURE_OPENAI_BASE_URL:-}
       - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-}
+      # GPT-5.x/o-series deployments need max_completion_tokens; gpt-4o uses max_tokens
+      - AZURE_OPENAI_MAX_TOKENS_FIELD=${AZURE_OPENAI_MAX_TOKENS_FIELD:-}
+      # Azure AAD service-principal auth (used when no AZURE_OPENAI_API_KEY is set)
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+      # Pre-fetched AAD token escape hatch for local smoke tests (optional)
+      - AZURE_OPENAI_BEARER_TOKEN=${AZURE_OPENAI_BEARER_TOKEN:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - AWS_REGION=${AWS_REGION:-us-east-1}
@@ -104,6 +113,30 @@ services:
       - EXA_API_KEY=${EXA_API_KEY:-}
     ports:
       - "127.0.0.1:${HTTP_PORT:-3001}:${HTTP_PORT:-3001}"
+
+  # Gmail MCP/HTTP-tool server for the email-order-import workflow.
+  # The worker reaches it at http://gmail-mcp:8080 (the definition's gmail_mcp_url
+  # variable). Defaults to STUB mode so the stack runs without Gmail credentials;
+  # set GMAIL_MCP_STUB=false and provide GMAIL_*/SUPABASE_* to use a real inbox.
+  gmail-mcp:
+    build: ./services/gmail-mcp
+    container_name: gmail-mcp
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=8080
+      - GMAIL_MCP_STUB=${GMAIL_MCP_STUB:-true}
+      - GMAIL_MCP_PUBLIC_URL=${GMAIL_MCP_PUBLIC_URL:-http://gmail-mcp:8080}
+      - ORDER_PDF_BUCKET=${ORDER_PDF_BUCKET:-order-pdfs}
+      - SIGNED_URL_TTL=${SIGNED_URL_TTL:-600}
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:54321}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-dev-service-role-key}
+      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID:-}
+      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET:-}
+      - GMAIL_REFRESH_TOKEN=${GMAIL_REFRESH_TOKEN:-}
+    ports:
+      - "127.0.0.1:8088:8080"
 
   frontend:
     build:

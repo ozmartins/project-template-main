@@ -40,6 +40,38 @@ import { normalizeAzureOpenAiEnv, resolveAzureDeploymentName } from "../azure_op
 import { web_crawl } from "./web_crawl";
 import { web_search } from "./web_search";
 
+// ── Azure AAD (Entra ID) auth ─────────────────────────────────────────────
+// When no AZURE_OPENAI_API_KEY is set (e.g. the key cannot be read due to RBAC),
+// authenticate to the Azure OpenAI data plane with a Microsoft Entra bearer token.
+// Resolution order:
+//   1. AZURE_OPENAI_BEARER_TOKEN — a pre-fetched token (used for local smoke tests;
+//      e.g. `az account get-access-token --resource https://cognitiveservices.azure.com`).
+//   2. DefaultAzureCredential — picks up a service principal from
+//      AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID (container/CI),
+//      managed identity, or the Azure CLI login (host). Tokens are cached/refreshed.
+const AZURE_COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default";
+
+type AzureTokenCredential = { getToken(scope: string): Promise<{ token: string } | null> };
+let _azureCredential: AzureTokenCredential | null = null;
+
+async function getAzureBearerToken(): Promise<string> {
+  const preFetched = process.env.AZURE_OPENAI_BEARER_TOKEN;
+  if (preFetched) return preFetched;
+  if (!_azureCredential) {
+    const { DefaultAzureCredential } = await import("@azure/identity");
+    _azureCredential = new DefaultAzureCredential() as unknown as AzureTokenCredential;
+  }
+  const token = await _azureCredential.getToken(AZURE_COGNITIVE_SCOPE);
+  if (!token?.token) {
+    throw new Error(
+      "Azure OpenAI: no AZURE_OPENAI_API_KEY and AAD token acquisition failed. " +
+        "Set AZURE_OPENAI_API_KEY, or AZURE_OPENAI_BEARER_TOKEN, or a service principal " +
+        "(AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID)."
+    );
+  }
+  return token.token;
+}
+
 // ── Azure env-var aliases ────────────────────────────────────────────────
 // pi-ai reads AZURE_OPENAI_API_KEY and AZURE_OPENAI_BASE_URL.
 // Many environments (including mna-app) use AZURE_API_KEY / AZURE_API_BASE.
@@ -232,20 +264,35 @@ export async function llm_agent(args: LlmAgentArgs): Promise<LlmAgentResult> {
     );
   }
 
-  // ── Azure: use openai-completions with Chat API instead of Responses API ──
+  // ── Azure: use openai-completions against the OpenAI-compatible v1 API ──
   // The azure-openai-responses provider calls the OpenAI Responses API (/v1/responses)
-  // which many Azure deployments do not support. Azure's Chat Completions API
-  // (/openai/v1/chat/completions) is universally available and accepts api-key + api-version
-  // as request headers. We build a custom model object to use openai-completions.
+  // which many Azure deployments do not support. Azure's v1 Chat Completions API
+  // (/openai/v1/chat/completions) is OpenAI-compatible: it accepts the secret as a
+  // bearer token (Authorization: Bearer <key|AAD-token>), which pi-ai sends from
+  // the apiKey passed to complete(). We build a custom model object to target it.
   let model: unknown;
+  // Secret passed to complete() for the Azure custom model (api key OR AAD token).
+  // Left undefined for other providers, which pi-ai resolves from their own env vars.
+  let azureCompletionKey: string | undefined;
   if (provider === "azure-openai-responses") {
     const azureBaseUrl = process.env.AZURE_OPENAI_BASE_URL ?? "";
     const azureApiKey = process.env.AZURE_OPENAI_API_KEY ?? "";
-    const azureVersion = process.env.AZURE_OPENAI_API_VERSION ?? "2025-03-01-preview";
+    const azureVersion = process.env.AZURE_OPENAI_API_VERSION ?? "preview";
     if (!azureBaseUrl)
       throw new Error(
         "AZURE_OPENAI_BASE_URL (or AZURE_API_BASE) is required for provider azure-openai-responses"
       );
+    // Auth: prefer a static api-key when available; otherwise fall back to a
+    // Microsoft Entra (AAD) bearer token — required when the deployment's key
+    // cannot be read (RBAC) but the identity has data-plane access. Either secret
+    // is sent as `Authorization: Bearer <secret>`, which the v1 API accepts.
+    azureCompletionKey = azureApiKey || (await getAzureBearerToken());
+    // GPT-5.x and o-series reasoning deployments require `max_completion_tokens`
+    // and reject `max_tokens`; older deployments (e.g. gpt-4o) use `max_tokens`.
+    // pi-ai auto-detects `max_tokens` from the custom Azure URL, so allow an
+    // explicit override via env (set AZURE_OPENAI_MAX_TOKENS_FIELD=max_completion_tokens
+    // for GPT-5.x). Unset → pi-ai's default auto-detection (max_tokens).
+    const maxTokensField = process.env.AZURE_OPENAI_MAX_TOKENS_FIELD;
     model = {
       id: modelId,
       name: `Azure ${modelId}`,
@@ -258,9 +305,9 @@ export async function llm_agent(args: LlmAgentArgs): Promise<LlmAgentResult> {
       contextWindow: 200000,
       maxTokens: 16384,
       headers: {
-        "api-key": azureApiKey,
         "api-version": azureVersion,
       },
+      ...(maxTokensField ? { compat: { maxTokensField } } : {}),
     };
   } else {
     model = (getModel as (p: string, m: string) => unknown)(provider, modelId);
@@ -365,6 +412,9 @@ export async function llm_agent(args: LlmAgentArgs): Promise<LlmAgentResult> {
     )(model, context, {
       temperature: args.temperature ?? 0,
       maxTokens: args.max_tokens ?? 2000,
+      // Azure custom model: pass the resolved secret (api key or AAD token).
+      // Other providers: omit so pi-ai resolves the key from their own env vars.
+      ...(azureCompletionKey ? { apiKey: azureCompletionKey } : {}),
     }).catch((err: Error) => {
       if (/content.filter|safety|policy/i.test(err.message)) {
         blocked = true;

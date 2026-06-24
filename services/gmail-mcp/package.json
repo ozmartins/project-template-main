@@ -1,0 +1,14 @@
+{
+  "name": "gmail-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gmail MCP/HTTP-tool server for the email-order-import workflow. Exposes POST /tools/{search_pending,download_attachment,mark_imported,mark_ignored} (the repo's HTTP tool convention used by llm_agent mcp_servers and callable via the http_request activity). Wraps the Gmail API and uploads PDF attachments to Supabase Storage, returning a signed URL.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}
