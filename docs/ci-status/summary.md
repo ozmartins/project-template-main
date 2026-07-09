@@ -30,7 +30,7 @@ Generated: 2026-07-09 07:42Z
 |---|---|---|---|
 | `validate-ontology` | 2026-06-24 20:07Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
 | `validate-dsl-definitions` | 2026-06-25 02:06Z | 🟠 error | failed_jobs=0, skipped_jobs=0 |
-| `code-quality` | 2026-07-08 06:32Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
+| `code-quality` | 2026-07-09 07:42Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
 
 ## Security & audits
 
