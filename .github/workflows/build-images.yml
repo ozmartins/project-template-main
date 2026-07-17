@@ -128,7 +128,7 @@ jobs:
         env:
           GRYPE_DB_VALIDATE_AGE: 'false'
           GRYPE_CONFIG: .grype.yaml
-        uses: anchore/scan-action@d43cc1dfea6a99ed123bf8f3133f1797c9b44492  # v4.1.0
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
         with:
           image: ${{ matrix.image_name }}:scan-${{ github.sha }}
           severity-cutoff: high
@@ -342,7 +342,7 @@ jobs:
       - name: Scan — Grype (CVE, second opinion)
         id: grype
         continue-on-error: true
-        uses: anchore/scan-action@d43cc1dfea6a99ed123bf8f3133f1797c9b44492  # v4.1.0
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
         env:
           GRYPE_DB_VALIDATE_AGE: 'false'
           GRYPE_CONFIG: .grype.yaml
