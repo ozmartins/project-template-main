@@ -1,6 +1,6 @@
 # Engineering health dashboard
 
-Generated: 2026-07-17 06:26Z
+Generated: 2026-07-17 06:59Z
 
 ## CI suites
 
@@ -22,7 +22,7 @@ Generated: 2026-07-17 06:26Z
 
 | Env×Cloud | Last deployed | SHA | Outcome | Pass 7d | Staleness |
 |---|---|---|---|---:|---|
-| `dev-azure` | 2026-07-17 00:28Z | `d70b7e6` | ✅ passed | 100% (1) | 6h |
+| `dev-azure` | 2026-07-17 00:28Z | `d70b7e6` | ✅ passed | 100% (1) | 7h |
 
 ## Code quality
 
@@ -45,7 +45,7 @@ Generated: 2026-07-17 06:26Z
 | Workflow | Last run | Outcome |
 |---|---|---|
 | `pipeline-daily` | 2026-07-16 08:06Z | ✅ passed |
-| `monitor-actions` | 2026-07-17 04:29Z | ✅ passed |
+| `monitor-actions` | 2026-07-17 06:59Z | ✅ passed |
 | `validate-dsl-definitions` | 2026-06-25 02:06Z | 🟠 error |
 | `validate-ontology` | 2026-06-24 20:07Z | ❌ failed |
 
