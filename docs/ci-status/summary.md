@@ -1,15 +1,15 @@
 # Engineering health dashboard
 
-Generated: 2026-07-17 00:11Z
+Generated: 2026-07-17 00:26Z
 
 ## CI suites
 
 | Suite | Last outcome | Last run | Pass 24h | Pass 7d | SLO | Streak |
 |---|---|---|---:|---:|---|---:|
-| `unit` | ✅ passed | 2026-06-24 20:06Z | 100% (1) | 100% (1) | — | 1 |
-| `temporal` | ❌ failed | 2026-06-24 20:07Z | 0% (1) | 0% (1) | — | 0 |
-| `helm` | ✅ passed | — | — | — | — | 1 |
-| `seed` | ✅ passed | — | — | — | — | 1 |
+| `unit` | ✅ passed | 2026-07-17 00:24Z | 100% (1) | 100% (1) | — | 2 |
+| `temporal` | ❌ failed | 2026-07-17 00:24Z | 0% (1) | 0% (1) | — | 0 |
+| `helm` | ✅ passed | — | — | — | — | 2 |
+| `seed` | ✅ passed | — | — | — | — | 2 |
 
 ## E2E suites
 
