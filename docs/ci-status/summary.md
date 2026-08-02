@@ -38,7 +38,7 @@ Generated: 2026-08-02 09:13Z
 |---|---|---|---:|
 | `architecture-audit` | 2026-08-02 08:21Z | ✅ passed | 0 |
 | `audit-cis-kubernetes` | 2026-08-02 08:24Z | 🟠 error | 0 |
-| `audit-azure-security` | 2026-08-01 09:13Z | 🟠 error | 0 |
+| `audit-azure-security` | 2026-08-02 09:13Z | 🟠 error | 0 |
 
 ## Ops workflows
 
