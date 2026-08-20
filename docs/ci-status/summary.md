@@ -1,6 +1,6 @@
 # Engineering health dashboard
 
-Generated: 2026-08-20 04:00Z
+Generated: 2026-08-20 04:41Z
 
 ## CI suites
 
@@ -30,7 +30,7 @@ Generated: 2026-08-20 04:00Z
 |---|---|---|---|
 | `validate-ontology` | 2026-06-24 20:07Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
 | `validate-dsl-definitions` | 2026-06-25 02:06Z | 🟠 error | failed_jobs=0, skipped_jobs=0 |
-| `code-quality` | 2026-08-19 04:41Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
+| `code-quality` | 2026-08-20 04:41Z | ❌ failed | failed_jobs=1, skipped_jobs=0 |
 
 ## Security & audits
 
