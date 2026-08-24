@@ -1,6 +1,6 @@
 # Engineering health dashboard
 
-Generated: 2026-08-24 08:32Z
+Generated: 2026-08-24 09:03Z
 
 ## CI suites
 
@@ -22,7 +22,7 @@ Generated: 2026-08-24 08:32Z
 
 | Env×Cloud | Last deployed | SHA | Outcome | Pass 7d | Staleness |
 |---|---|---|---|---:|---|
-| `dev-azure` | 2026-07-17 00:28Z | `d70b7e6` | ✅ passed | 100% (1) | 920h |
+| `dev-azure` | 2026-07-17 00:28Z | `d70b7e6` | ✅ passed | 100% (1) | 921h |
 
 ## Code quality
 
