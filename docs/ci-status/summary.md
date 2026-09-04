@@ -36,7 +36,7 @@ Generated: 2026-09-04 10:44Z
 
 | Workflow | Last run | Outcome | Finding count |
 |---|---|---|---:|
-| `architecture-audit` | 2026-09-03 10:41Z | ✅ passed | 0 |
+| `architecture-audit` | 2026-09-04 10:44Z | ✅ passed | 0 |
 | `audit-cis-kubernetes` | 2026-09-03 14:57Z | 🟠 error | 0 |
 | `audit-azure-security` | 2026-09-03 16:30Z | 🟠 error | 0 |
 
