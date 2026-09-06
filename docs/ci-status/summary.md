@@ -1,6 +1,6 @@
 # Engineering health dashboard
 
-Generated: 2026-09-06 10:11Z
+Generated: 2026-09-06 10:17Z
 
 ## CI suites
 
@@ -36,7 +36,7 @@ Generated: 2026-09-06 10:11Z
 
 | Workflow | Last run | Outcome | Finding count |
 |---|---|---|---:|
-| `architecture-audit` | 2026-09-05 09:58Z | ✅ passed | 0 |
+| `architecture-audit` | 2026-09-06 10:17Z | ✅ passed | 0 |
 | `audit-cis-kubernetes` | 2026-09-05 14:57Z | 🟠 error | 0 |
 | `audit-azure-security` | 2026-09-05 16:31Z | 🟠 error | 0 |
 
