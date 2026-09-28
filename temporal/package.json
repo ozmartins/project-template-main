@@ -29,7 +29,7 @@
     "mammoth": "^1.11.0",
     "node-fetch": "^3.3.2",
     "pdf-parse": "^2.4.5",
-    "pg": "^8.13.1"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
@@ -37,7 +37,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^26.0.0",
     "@types/pdf-parse": "^1.1.5",
-    "@types/pg": "^8.11.0",
+    "@types/pg": "^8.21.0",
     "jest": "^30.4.2",
     "license-checker": "^25.0.1",
     "ts-jest": "^29.2.0",
